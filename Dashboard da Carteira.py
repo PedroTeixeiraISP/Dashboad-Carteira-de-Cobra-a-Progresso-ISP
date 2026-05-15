@@ -178,14 +178,12 @@ def parse_valor(serie: pd.Series) -> pd.Series:
 
 
 def get_sheet_names(file_source):
-    # Ajustado para usar a engine pyxlsb necessária para arquivos binários
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         return xls.sheet_names
 
 
 @st.cache_data(show_spinner=False)
 def carregar_dados(file_source, sheet_name):
-    # Ajustado para usar a engine pyxlsb necessária para arquivos binários
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         abas = xls.sheet_names
         if sheet_name not in abas:
@@ -208,7 +206,6 @@ def carregar_dados(file_source, sheet_name):
         if col not in df.columns:
             df[col] = np.nan
 
-    # Tratamento de datas vindo de arquivos binários .xlsb (convertendo inteiros do Excel se necessário)
     for col_data in ["Vencimento", "Lançamento"]:
         if pd.api.types.is_numeric_dtype(df[col_data]):
             df[col_data] = pd.to_datetime(df[col_data], unit='D', origin='1899-12-30', errors="coerce")
@@ -296,12 +293,13 @@ st.markdown(
 with st.sidebar:
     st.title("Painel de Controle")
     
-    # Nome exato da planilha binária guardada na mesma pasta
     NOME_ARQUIVO_EXCEL = "Base de cobrança - Teste.xlsb" 
     
-    # Tenta ler o arquivo diretamente da pasta do projeto por padrão
-    if Path(NOME_ARQUIVO_EXCEL).exists():
-        fonte = NOME_ARQUIVO_EXCEL
+    # Resolução de caminho absoluto para evitar falsos negativos no Streamlit Cloud
+    caminho_base_local = Path(__file__).parent / NOME_ARQUIVO_EXCEL
+    
+    if caminho_base_local.exists():
+        fonte = caminho_base_local
         fonte_label = "Base Local Binária (.xlsb)"
         st.success(f"✔️ Dados carregados com sucesso")
     else:
@@ -314,7 +312,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
         
-    if st.button("🚪 Sair do Painel", use_container_width=True):
+    if st.button("🚪 Sair do Panel", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 

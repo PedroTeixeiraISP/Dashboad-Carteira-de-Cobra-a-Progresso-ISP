@@ -61,7 +61,7 @@ def tela_de_login():
         
         c1, c2, c3 = st.columns([1, 3, 1])
         with c2:
-            email_input = st.text_input("E-mail corporativo", placeholder="seuemail@ispschools.com").strip().lower()
+            email_input = st.text_input("E-mail corporativo", placeholder="Digite seu e-mail").strip().lower()
             bt_entrar = st.button("Verificar e Acessar", use_container_width=True)
             
             if bt_entrar and email_input:

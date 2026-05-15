@@ -194,6 +194,14 @@ def carregar_dados(file_source, sheet_name):
 
     df.columns = [str(c).strip() for c in df.columns]
 
+    # --- MAPEAMENTO INTELIGENTE DA COLUNA DE HISTÓRICO ---
+    if "Histórico de Acionamento" not in df.columns:
+        for col in df.columns:
+            col_lower = col.lower()
+            if "histórico" in col_lower or "historico" in col_lower or "acionamento" in col_lower:
+                df = df.rename(columns={col: "Histórico de Acionamento"})
+                break
+
     colunas_esperadas = [
         "Responsável", "UNIDADE", "Vencimento", "Valor", "Lançamento",
         "Status", "Histórico de Acionamento", "Classe de Risco", "Bloqueado"
@@ -295,7 +303,7 @@ with st.sidebar:
     
     NOME_ARQUIVO_EXCEL = "Base de cobrança - Teste.xlsb" 
     
-    # Resolução de caminho absoluto para evitar falsos negativos no Streamlit Cloud
+    # Busca com caminho absoluto dinâmico baseado no script
     caminho_base_local = Path(__file__).parent / NOME_ARQUIVO_EXCEL
     
     if caminho_base_local.exists():
@@ -312,7 +320,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
         
-    if st.button("🚪 Sair do Panel", use_container_width=True):
+    if st.button("🚪 Sair do Painel", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 

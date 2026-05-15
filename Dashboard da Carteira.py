@@ -44,7 +44,6 @@ def tela_de_login():
         unsafe_allow_html=True
     )
     
-    # Inicializa variáveis de sessão
     if "autenticado" not in st.session_state:
         st.session_state.autenticado = False
         st.session_state.usuario_email = ""
@@ -62,12 +61,10 @@ def tela_de_login():
         
         c1, c2, c3 = st.columns([1, 3, 1])
         with c2:
-            # Entrada de texto simples fora de formulários complexos para evitar loops de cache
             email_input = st.text_input("E-mail corporativo", placeholder="seuemail@ispschools.com").strip().lower()
             bt_entrar = st.button("Verificar e Acessar", use_container_width=True)
             
             if bt_entrar and email_input:
-                # Validação direta do sufixo do e-mail
                 if email_input.endswith("@ispschools.com") or email_input.endswith("@colegioprogresso.com.br"):
                     st.session_state.autenticado = True
                     st.session_state.usuario_email = email_input
@@ -76,16 +73,14 @@ def tela_de_login():
                 else:
                     st.error("E-mail não autorizado. Utilize um domínio @ispschools.com ou @colegioprogresso.com.br")
                     
-        st.stop() # Bloqueia o app caso o e-mail não seja válido
+        st.stop()
 
-# Executa a validação de domínio
 tela_de_login()
 
 # ==========================================
 # INÍCIO DO CÓDIGO DO DASHBOARD (SÓ RODA SE LOGADO)
 # ==========================================
 
-# 1. Configuração da Página
 st.set_page_config(
     page_title="Dashboard da Carteira | Online",
     page_icon="📊",
@@ -94,7 +89,6 @@ st.set_page_config(
 )
 
 SHEET_NAME = "Base Teste"
-DEFAULT_SHAREPOINT_URL = "https://isp-my.sharepoint.com/:x:/r/personal/pteixeira_ispschools_com/Documents/Base%20de%20cobran%C3%A7a%20-%20Teste.xlsm?d=wec297335739b4b388d4a129b6a95e733&csf=1&web=1&e=VjdoE0&nav=MTVfe0FDOEM2MkQ4LUUyOEQtNDAxMC05MEUyLTE1ODYyQkMwODA5Mn0"
 
 # Cores de Identidade Visual
 ISP_GREEN = "#0B6B53"
@@ -106,7 +100,6 @@ TEXT = "#1F2937"
 MUTED = "#667085"
 BORDER = "rgba(11,107,83,0.10)"
 
-# Estilização CSS personalizada
 st.markdown(
     f"""
     <style>
@@ -147,16 +140,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 2. Funções Utilitárias e de Formatação
-def make_downloadable_sharepoint_url(url: str) -> str:
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    query.pop("web", None)
-    query["download"] = ["1"]
-    new_query = urlencode(query, doseq=True)
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
-
-
+# Funções Utilitárias e de Formatação
 def brl(value: float) -> str:
     value = 0 if pd.isna(value) else value
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -194,13 +178,15 @@ def parse_valor(serie: pd.Series) -> pd.Series:
 
 
 def get_sheet_names(file_source):
-    with pd.ExcelFile(file_source, engine="openpyxl") as xls:
+    # Ajustado para usar a engine pyxlsb necessária para arquivos binários
+    with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         return xls.sheet_names
 
 
 @st.cache_data(show_spinner=False)
 def carregar_dados(file_source, sheet_name):
-    with pd.ExcelFile(file_source, engine="openpyxl") as xls:
+    # Ajustado para usar a engine pyxlsb necessária para arquivos binários
+    with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         abas = xls.sheet_names
         if sheet_name not in abas:
             raise ValueError(
@@ -222,8 +208,13 @@ def carregar_dados(file_source, sheet_name):
         if col not in df.columns:
             df[col] = np.nan
 
-    df["Vencimento"] = pd.to_datetime(df["Vencimento"], errors="coerce")
-    df["Lançamento"] = pd.to_datetime(df["Lançamento"], errors="coerce")
+    # Tratamento de datas vindo de arquivos binários .xlsb (convertendo inteiros do Excel se necessário)
+    for col_data in ["Vencimento", "Lançamento"]:
+        if pd.api.types.is_numeric_dtype(df[col_data]):
+            df[col_data] = pd.to_datetime(df[col_data], unit='D', origin='1899-12-30', errors="coerce")
+        else:
+            df[col_data] = pd.to_datetime(df[col_data], errors="coerce")
+
     df["Valor"] = parse_valor(df["Valor"]).fillna(0)
 
     for col in ["Responsável", "UNIDADE", "Status", "Classe de Risco", "Histórico de Acionamento"]:
@@ -290,7 +281,7 @@ def excel_bytes(abas: dict[str, pd.DataFrame]) -> bytes:
     return output.getvalue()
 
 
-# 3. Cabeçalho da Aplicação
+# Cabeçalho da Aplicação
 st.markdown(
     f"""
     <div class='hero'>
@@ -303,59 +294,52 @@ st.markdown(
 
 # 4. Barra Lateral (Sidebar) de Configuração
 with st.sidebar:
-    st.title("Fonte de dados")
-    modo = st.radio("Origem", ["Link SharePoint", "Upload manual", "Arquivo local"], index=0)
-    sharepoint_url = st.text_area("Link SharePoint", value=DEFAULT_SHAREPOINT_URL, height=120)
-    uploaded = st.file_uploader("Selecione o arquivo .xlsm ou .xlsx", type=["xlsm", "xlsx"])
-    local_path = st.text_input("Caminho local do arquivo", value="Base de cobrança - Teste.xlsm")
+    st.title("Painel de Controle")
     
-    if st.button("Atualizar dados / Limpar Cache", use_container_width=True):
+    # Nome exato da planilha binária guardada na mesma pasta
+    NOME_ARQUIVO_EXCEL = "Base de cobrança - Teste.xlsb" 
+    
+    # Tenta ler o arquivo diretamente da pasta do projeto por padrão
+    if Path(NOME_ARQUIVO_EXCEL).exists():
+        fonte = NOME_ARQUIVO_EXCEL
+        fonte_label = "Base Local Binária (.xlsb)"
+        st.success(f"✔️ Dados carregados com sucesso")
+    else:
+        st.warning("⚠️ Arquivo '.xlsb' oficial não encontrado na pasta. Use o envio temporário:")
+        uploaded = st.file_uploader("Selecione o arquivo .xlsb", type=["xlsb"])
+        fonte = uploaded
+        fonte_label = "Upload manual temporário"
+
+    if st.button("🔄 Atualizar / Limpar Cache", use_container_width=True):
         st.cache_data.clear()
+        st.rerun()
         
     if st.button("🚪 Sair do Painel", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 
-fonte = None
-fonte_label = None
-
-if modo == "Link SharePoint":
-    if sharepoint_url.strip():
-        fonte = make_downloadable_sharepoint_url(sharepoint_url.strip())
-        fonte_label = "SharePoint"
-elif modo == "Upload manual":
-    if uploaded is not None:
-        fonte = uploaded
-        fonte_label = "Upload manual"
-elif modo == "Arquivo local":
-    path = Path(local_path)
-    if path.exists() and path.is_file():
-        fonte = str(path)
-        fonte_label = "Arquivo local"
-
 if fonte is None:
-    st.warning("Defina uma origem válida para carregar a base de cobrança.")
+    st.error(f"Por favor, certifique-se de que o arquivo '{NOME_ARQUIVO_EXCEL}' está salvo na mesma pasta deste script.")
     st.stop()
 
 try:
     abas_disponiveis = get_sheet_names(fonte)
 except Exception as e:
-    st.error(f"Não foi possível abrir o arquivo Excel: {e}")
+    st.error(f"Não foi possível abrir o arquivo binário Excel: {e}")
     st.stop()
 
 if SHEET_NAME not in abas_disponiveis:
-    st.error(f"A aba '{SHEET_NAME}' não foi encontrada no arquivo.")
+    st.error(f"A aba '{SHEET_NAME}' não foi encontrada no arquivo. Verifique o nome da aba.")
     st.stop()
 
 try:
     df = carregar_dados(fonte, SHEET_NAME)
 except Exception as e:
-    st.error(f"Erro ao carregar os dados: {e}")
+    st.error(f"Erro ao tratar os dados da planilha: {e}")
     st.stop()
 
 # Filtros Dinâmicos na Sidebar
 with st.sidebar:
-    st.success(f"Fonte: {fonte_label}")
     classes = sorted(df["Classe de Risco"].dropna().astype(str).unique().tolist())
     classe_sel = st.multiselect("Classe de Risco", classes, default=classes)
     apenas_vencidos = st.toggle("Apenas vencidos", value=True)

@@ -173,17 +173,15 @@ def carregar_dados(file_source):
     df = df.dropna(how='all')
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Mapeamento Cirúrgico baseado na lista real enviada
     df = df.rename(columns={
         "UNIDADE": "UNIDADE",
         "Responsável": "Responsável",
         "Classe de Risco": "Classe de Risco",
         "Status": "Status",
-        "Histórico do Acionamento": "Historico_Real",  # Alvo prioritário apontado por você
+        "Histórico do Acionamento": "Historico_Real",
         "Valor TT da Divida": "Valor_Divida"
     })
 
-    # Tratamento de Fallback caso falte alguma coluna mapeada
     if "Valor_Divida" not in df.columns and "Valor" in df.columns:
         df["Valor_Divida"] = df["Valor"]
     elif "Valor_Divida" not in df.columns:
@@ -197,7 +195,6 @@ def carregar_dados(file_source):
     df["Valor_Divida"] = parse_valor(df["Valor_Divida"]).fillna(0)
     df["Historico_Real"] = df["Historico_Real"].fillna("").astype(str).str.strip()
 
-    # Tratamento de Datas nativas da sua lista
     for col_data in ["Data de Vencimento", "Vencimento"]:
         if col_data in df.columns:
             if pd.api.types.is_numeric_dtype(df[col_data]):
@@ -219,7 +216,6 @@ def carregar_dados(file_source):
     df["UNIDADE"] = df["UNIDADE"].replace("", "Não informado")
     df["Classe de Risco"] = df["Classe de Risco"].replace("", "Não informado")
 
-    # Identificação de Status e Regras de Negócio
     hoje = pd.Timestamp.today().normalize()
     
     if "Em Aberto" in df.columns:
@@ -261,13 +257,26 @@ def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
         return " | ".join(u) if u else "Não informado"
         
     def concatenar_historico(series):
-        # Captura estritamente os textos legítimos inseridos na planilha
         v = [str(x).strip() for x in series if str(x).strip() != "" and str(x).lower() != "nan" and str(x).lower() != "histórico do acionamento" and str(x).lower() != "histórico de acionamento"]
         u = list(dict.fromkeys(v))
         return " | ".join(u) if u else "Sem observações"
 
+    # CORREÇÃO CRÍTICA DO VALOR EM ABERTO:
+    # Se a mesma 'Chave' ou o mesmo título aparece repetido devido às várias linhas de histórico,
+    # agrupamos primeiro por título/chave para pegar o valor real único da dívida daquele registro,
+    # e só depois consolidamos por Responsável.
+    if "Chave" in base.columns:
+        sub_agrupado = base.groupby(["UNIDADE", "Responsável", "Classe de Risco", "Chave"], dropna=False).agg({
+            "Valor_Divida": "max",
+            "Data_Vencimento_Tratada": "min",
+            "Status": concatenar_status,
+            "Historico_Real": concatenar_historico
+        }).reset_index()
+    else:
+        sub_agrupado = base
+
     tabela = (
-        base.groupby(["UNIDADE", "Responsável", "Classe de Risco"], dropna=False)
+        sub_agrupado.groupby(["UNIDADE", "Responsável", "Classe de Risco"], dropna=False)
         .agg(**{
             "Valor em Aberto": ("Valor_Divida", "sum"), 
             "Vencimento Mais Antigo": ("Data_Vencimento_Tratada", "min"), 
@@ -305,7 +314,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
         
-    if st.button("🚪 Sair do Painel", use_container_width=True):
+    if st.button("🚪 Sair do Panel", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 
@@ -335,29 +344,34 @@ unidades_disponiveis = sorted(df["UNIDADE"].dropna().astype(str).unique().tolist
 st.write("**Filtrar por UNIDADE:**")
 unidade_sel = st.pills(label="Unidades Filtro", options=unidades_disponiveis, default=unidades_disponiveis, selection_mode="multi", label_visibility="collapsed")
 
-# Aplicação dos Filtros
+# Aplicação dos Filtros nos cards gerais removendo duplicidades por chave/linha
 base = df.copy()
 if unidade_sel: base = base[base["UNIDADE"].isin(unidade_sel)]
 if classe_sel: base = base[base["Classe de Risco"].isin(classe_sel)]
 if apenas_vencidos: base = base[base["Vencido_Bool"]]
 if apenas_abertos: base = base[base["Em_Aberto_Bool"]]
 
-# KPIs
-valor_total = float(base["Valor_Divida"].sum())
+if "Chave" in base.columns:
+    base_unicos_kpi = base.drop_duplicates(subset=["Chave"])
+else:
+    base_unicos_kpi = base
+
+# KPIs baseados nos valores limpos e sem linhas duplicadas
+valor_total = float(base_unicos_kpi["Valor_Divida"].sum())
 clientes_distintos = int(base["Responsável"].nunique())
-titulos_aberto = int(len(base))
+titulos_aberto = int(len(base_unicos_kpi))
 clientes_bloqueados = int(base.loc[base["Bloqueado_Bool"], "Responsável"].nunique())
 
 k1, k2, k3, k4 = st.columns(4)
-for col, titulo, valor, rodape in [(k1, "Valor Total da Carteira", brl_short(valor_total), brl(valor_total)), (k2, "Clientes Distintos", f"{clientes_distintos:,}".replace(",", "."), "Responsáveis únicos"), (k3, "Títulos Filtrados", f"{titulos_aberto:,}".replace(",", "."), "Registros"), (k4, "Clientes Bloqueados", f"{clientes_bloqueados:,}".replace(",", "."), "Bloqueado = Sim")]:
+for col, titulo, valor, rodape in [(k1, "Valor Total da Carteira", brl_short(valor_total), brl(valor_total)), (k2, "Clientes Distintos", f"{clientes_distintos:,}".replace(",", "."), "Responsáveis únicos"), (k3, "Títulos Filtrados", f"{titulos_aberto:,}".replace(",", "."), "Registros Únicos"), (k4, "Clientes Bloqueados", f"{clientes_bloqueados:,}".replace(",", "."), "Bloqueado = Sim")]:
     with col: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>{titulo}</div><div class='kpi-value'>{valor}</div><div class='kpi-foot'>{rodape}</div></div>", unsafe_allow_html=True)
 
 st.markdown("<div class='section-title'>Visualizações</div>", unsafe_allow_html=True)
 
-# Gráficos (Linha 1)
+# Gráficos baseados em dados unificados
 c1, c2 = st.columns([1.05, 1.25])
 with c1:
-    status_df = base.groupby("Status", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False)
+    status_df = base_unicos_kpi.groupby("Status", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False)
     status_df = status_df[status_df["Status"] != ""]
     topo = pd.DataFrame({"Status": ["Valor Total"], "Valor_Divida": [valor_total]})
     funil_df = pd.concat([topo, status_df], ignore_index=True)
@@ -368,7 +382,7 @@ with c1:
     st.plotly_chart(fig_funil, use_container_width=True, theme=None)
 
 with c2:
-    mes_df = base.groupby("Mes_Vencimento_Txt", as_index=False)["Valor_Divida"].sum().sort_values("Mes_Vencimento_Txt", ascending=True)
+    mes_df = base_unicos_kpi.groupby("Mes_Vencimento_Txt", as_index=False)["Valor_Divida"].sum().sort_values("Mes_Vencimento_Txt", ascending=True)
     mes_df["Rótulo"] = mes_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)} | {pct(v, valor_total)}")
     fig_mes = px.bar(mes_df, x="Valor_Divida", y="Mes_Vencimento_Txt", orientation="h", text="Rótulo", color_discrete_sequence=[ISP_GREEN])
     fig_mes.update_traces(textposition="inside")
@@ -378,7 +392,7 @@ with c2:
 # Gráficos (Linha 2)
 c3, c4 = st.columns([1.15, 0.85])
 with c3:
-    risco_df = base.groupby("Classe de Risco", as_index=False)["Valor_Divida"].sum().sort_values("Classe de Risco", ascending=True)
+    risco_df = base_unicos_kpi.groupby("Classe de Risco", as_index=False)["Valor_Divida"].sum().sort_values("Classe de Risco", ascending=True)
     risco_df["Rótulo"] = risco_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
     fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor_Divida", text="Rótulo", color="Valor_Divida", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
     fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
@@ -386,9 +400,9 @@ with c3:
 
 with c4:
     st.markdown("<div class='section-title' style='margin-top:0;'>Indicadores Adicionais</div>", unsafe_allow_html=True)
-    atraso_medio = base.loc[base["Dias_Atraso_Num"] > 0, "Dias_Atraso_Num"].mean()
-    maior_unidade = base.groupby("UNIDADE", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False).head(1)
-    mais_antigo = base["Data_Vencimento_Tratada"].min()
+    atraso_medio = base_unicos_kpi.loc[base_unicos_kpi["Dias_Atraso_Num"] > 0, "Dias_Atraso_Num"].mean()
+    maior_unidade = base_unicos_kpi.groupby("UNIDADE", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False).head(1)
+    mais_antigo = base_unicos_kpi["Data_Vencimento_Tratada"].min()
     st.metric("Atraso médio", f"{0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias")
     st.metric("Vencimento mais antigo", mais_antigo.strftime("%d/%m/%Y") if pd.notna(mais_antigo) else "Sem data")
     if not maior_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor_Divida"]))

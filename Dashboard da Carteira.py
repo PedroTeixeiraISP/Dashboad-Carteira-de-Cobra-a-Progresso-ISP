@@ -203,7 +203,6 @@ def carregar_dados(file_source):
         if col not in df.columns:
             df[col] = np.nan
 
-    # Força a coluna mapeada de histórico a virar texto limpo sem nans estranhos
     df["Histórico de Acionamento"] = df["Histórico de Acionamento"].fillna("").astype(str).str.strip()
 
     for col_data in ["Vencimento", "Lançamento"]:
@@ -245,7 +244,6 @@ def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
         u = list(dict.fromkeys(v))
         return " | ".join(u) if u else "Não informado"
         
-    # CORREÇÃO DA OBSERVAÇÃO: Filtra estritamente strings válidas da planilha e evita injetar nomes de colunas
     def concatenar_historico(series):
         v = [str(x).strip() for x in series if str(x).strip() != "" and str(x).lower() != "nan" and str(x).lower() != "histórico de acionamento"]
         u = list(dict.fromkeys(v))
@@ -366,7 +364,7 @@ with c2:
 c3, c4 = st.columns([1.15, 0.85])
 with c3:
     risco_df = base.groupby("Classe de Risco", as_index=False)["Valor"].sum().sort_values("Classe de Risco", ascending=True)
-    risco_df["Rótulo"] = risk_df = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
+    risco_df["Rótulo"] = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
     fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor", text="Rótulo", color="Valor", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
     fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
     st.plotly_chart(fig_risco, use_container_width=True, theme=None)

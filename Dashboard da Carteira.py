@@ -126,7 +126,7 @@ st.markdown(
         .kpi-label {{font-size: 0.86rem; font-weight: 700; color: {MUTED}; margin-bottom: 8px;}}
         .kpi-value {{font-size: 1.9rem; line-height: 1.08; font-weight: 800; color: {ISP_GREEN_DARK};}}
         .kpi-foot {{font-size: 0.82rem; color: {MUTED}; margin-top: 8px;}}
-        .section-title {{font-size: 1.08rem; font-weight: 800; color: {ISP_GREEN_DARK}; margin: .25rem 0 .85rem 0;}}
+        .section-title {{font-size: 1.08rem; font-weight: 800; color: {ISP_GREEN_DARK}; margin: 1.5rem 0 .85rem 0;}}
         div[data-testid="stMetric"] {{
             background: white;
             border: 1px solid {BORDER};
@@ -173,15 +173,12 @@ def get_sheet_names(file_source):
 def carregar_dados(file_source):
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         abas = xls.sheet_names
-        # PROTEÇÃO: Se "Base Teste" não existir, pega a primeira aba que tiver no arquivo
         aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
         df = pd.read_excel(xls, sheet_name=aba_alvo)
 
-    # Remove colunas completamente sem nome ou vazias
     df = df.dropna(how='all')
     df.columns = [str(c).strip() for c in df.columns]
 
-    # MAPEAMENTO INTELIGENTE ADAPTATIVO DE COLUNAS
     mapeamento = {
         "Responsável": ["responsável", "responsavel", "cliente", "nome", "aluno"],
         "UNIDADE": ["unidade", "unidades", "escola", "unid"],
@@ -295,13 +292,10 @@ except Exception as e:
     st.error(f"Erro crítico ao processar planilha: {e}")
     st.stop()
 
-# --- BLINDAGEM DE DIAGNÓSTICO ---
-# Se mesmo com tudo o DataFrame vier vazio, mostra o que tem dentro do arquivo pro usuário descobrir o motivo
 if df.empty or df["Valor"].sum() == 0:
     st.error("🚨 ATENÇÃO: O arquivo Excel foi lido com sucesso, mas o volume total extraído está zerado!")
     st.write("Isso acontece se a planilha nova estiver sem dados ou se as colunas mudaram radicalmente de nome.")
     st.write("**Colunas identificadas no seu arquivo novo:**", list(df.columns))
-    st.write("Abaixo está uma prévia das primeiras linhas detectadas no seu arquivo para auditoria:")
     st.dataframe(df.head(5))
     st.stop()
 
@@ -309,8 +303,8 @@ if df.empty or df["Valor"].sum() == 0:
 with st.sidebar:
     classes = sorted(df["Classe de Risco"].dropna().astype(str).unique().tolist())
     classe_sel = st.multiselect("Classe de Risco", classes, default=classes)
-    apenas_vencidos = st.toggle("Apenas vencidos", value=False) # Mudado para False para evitar zerar por padrão
-    apenas_abertos = st.toggle("Apenas em aberto", value=False)   # Mudado para False para evitar zerar por padrão
+    apenas_vencidos = st.toggle("Apenas vencidos", value=False)
+    apenas_abertos = st.toggle("Apenas em aberto", value=False)
 
 unidades_disponiveis = sorted(df["UNIDADE"].dropna().astype(str).unique().tolist())
 st.write("**Filtrar por UNIDADE:**")
@@ -335,7 +329,7 @@ for col, titulo, valor, rodape in [(k1, "Valor Total da Carteira", brl_short(val
 
 st.markdown("<div class='section-title'>Visualizações</div>", unsafe_allow_html=True)
 
-# Gráficos
+# Gráficos (Linha 1)
 c1, c2 = st.columns([1.05, 1.25])
 with c1:
     status_df = base.groupby("Status", as_index=False)["Valor"].sum().sort_values("Valor", ascending=False)
@@ -356,6 +350,24 @@ with c2:
     fig_mes.update_layout(title="Mês de Vencimento vs Valor", height=430, margin=dict(l=100, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
     st.plotly_chart(fig_mes, use_container_width=True, theme=None)
 
+# Gráficos (Linha 2 - INCLUINDO CLASSE DE RISCO)
+c3, c4 = st.columns([1.15, 0.85])
+with c3:
+    risco_df = base.groupby("Classe de Risco", as_index=False)["Valor"].sum().sort_values("Classe de Risco", ascending=True)
+    risco_df["Rótulo"] = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
+    fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor", text="Rótulo", color="Valor", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
+    fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
+    st.plotly_chart(fig_risco, use_container_width=True, theme=None)
+
+with c4:
+    st.markdown("<div class='section-title' style='margin-top:0;'>Indicadores Adicionais</div>", unsafe_allow_html=True)
+    atraso_medio = base.loc[base["Dias em Atraso"].notna(), "Dias em Atraso"].mean()
+    maior_unidade = base.groupby("UNIDADE", as_index=False)["Valor"].sum().sort_values("Valor", ascending=False).head(1)
+    mais_antigo = base["Vencimento"].min()
+    st.metric("Atraso médio", f"{0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias")
+    st.metric("Vencimento mais antigo", mais_antigo.strftime("%d/%m/%Y") if pd.notna(mais_antigo) else "Sem data")
+    if not maior_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor"]))
+
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado"]])
@@ -363,5 +375,9 @@ tabela_bloq = montar_tabela(base[base["Bloqueado"]])
 aba1, aba2 = st.tabs(["Carteira Total", "Casos Bloqueados"])
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
+    st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
 with aba2:
     st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
+    st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
+
+st.download_button("Baixar ambas as tabelas em Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

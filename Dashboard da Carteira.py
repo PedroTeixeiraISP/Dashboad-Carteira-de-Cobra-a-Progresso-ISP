@@ -88,8 +88,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-SHEET_NAME = "Base Teste"
-
 # Cores de Identidade Visual
 ISP_GREEN = "#0B6B53"
 ISP_GREEN_DARK = "#084C3D"
@@ -140,29 +138,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Funções Utilitárias e de Formatação
 def brl(value: float) -> str:
     value = 0 if pd.isna(value) else value
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-
 def brl_short(value: float) -> str:
     value = 0 if pd.isna(value) else value
     v = abs(value)
-    if v >= 1_000_000_000:
-        txt = f"R$ {value/1_000_000_000:.2f} bi"
-    elif v >= 1_000_000:
-        txt = f"R$ {value/1_000_000:.2f} mi"
-    elif v >= 1_000:
-        txt = f"R$ {value/1_000:.1f} mil"
-    else:
-        txt = f"R$ {value:,.0f}"
-    return txt.replace(",", "X").replace(".", ",").replace("X", ".")
-
+    if v >= 1_000_000_000: return f"R$ {value/1_000_000_000:.2f} bi"
+    elif v >= 1_000_000: return f"R$ {value/1_000_000:.2f} mi"
+    elif v >= 1_000: return f"R$ {value/1_000:.1f} mil"
+    else: return f"R$ {value:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def pct(part, total) -> str:
     return f"{(part / total):.1%}" if total else "0,0%"
-
 
 def parse_valor(serie: pd.Series) -> pd.Series:
     if pd.api.types.is_numeric_dtype(serie):
@@ -176,40 +165,43 @@ def parse_valor(serie: pd.Series) -> pd.Series:
     )
     return pd.to_numeric(limpa, errors="coerce")
 
-
 def get_sheet_names(file_source):
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         return xls.sheet_names
 
-
 @st.cache_data(show_spinner=False)
-def carregar_dados(file_source, sheet_name):
+def carregar_dados(file_source):
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         abas = xls.sheet_names
-        if sheet_name not in abas:
-            raise ValueError(
-                f"A aba '{sheet_name}' não foi encontrada. Abas disponíveis: {', '.join(abas)}"
-            )
-        df = pd.read_excel(xls, sheet_name=sheet_name)
+        # PROTEÇÃO: Se "Base Teste" não existir, pega a primeira aba que tiver no arquivo
+        aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
+        df = pd.read_excel(xls, sheet_name=aba_alvo)
 
+    # Remove colunas completamente sem nome ou vazias
+    df = df.dropna(how='all')
     df.columns = [str(c).strip() for c in df.columns]
 
-    # --- MAPEAMENTO INTELIGENTE DA COLUNA DE HISTÓRICO ---
-    if "Histórico de Acionamento" not in df.columns:
-        for col in df.columns:
-            col_lower = col.lower()
-            if "histórico" in col_lower or "historico" in col_lower or "acionamento" in col_lower:
-                df = df.rename(columns={col: "Histórico de Acionamento"})
-                break
+    # MAPEAMENTO INTELIGENTE ADAPTATIVO DE COLUNAS
+    mapeamento = {
+        "Responsável": ["responsável", "responsavel", "cliente", "nome", "aluno"],
+        "UNIDADE": ["unidade", "unidades", "escola", "unid"],
+        "Vencimento": ["vencimento", "dt_venc", "data vencimento", "venc"],
+        "Valor": ["valor", "val", "total", "valor em aberto", "saldo"],
+        "Lançamento": ["lançamento", "lancamento", "dt_lanc", "data"],
+        "Status": ["status", "situação", "situacao"],
+        "Histórico de Acionamento": ["histórico", "historico", "acionamento", "observação", "observacao", "obs"],
+        "Classe de Risco": ["classe de risco", "risco", "classe"],
+        "Bloqueado": ["bloqueado", "bloq", "suspenso"]
+    }
 
-    colunas_esperadas = [
-        "Responsável", "UNIDADE", "Vencimento", "Valor", "Lançamento",
-        "Status", "Histórico de Acionamento", "Classe de Risco", "Bloqueado"
-    ]
-    
-    if "Unidade" in df.columns and "UNIDADE" not in df.columns:
-        df = df.rename(columns={"Unidade": "UNIDADE"})
+    for col_padrao, sinonimos in mapeamento.items():
+        if col_padrao not in df.columns:
+            for col_existente in df.columns:
+                if col_existente.lower() in sinonimos or any(s in col_existente.lower() for s in sinonimos):
+                    df = df.rename(columns={col_existente: col_padrao})
+                    break
 
+    colunas_esperadas = ["Responsável", "UNIDADE", "Vencimento", "Valor", "Lançamento", "Status", "Histórico de Acionamento", "Classe de Risco", "Bloqueado"]
     for col in colunas_esperadas:
         if col not in df.columns:
             df[col] = np.nan
@@ -234,7 +226,7 @@ def carregar_dados(file_source, sheet_name):
 
     df["Em Aberto"] = ~status_lower.isin(["pago", "liquidado", "baixado", "quitado", "cancelado"])
     df["Vencido"] = df["Vencimento"].notna() & (df["Vencimento"] < hoje)
-    df["Bloqueado"] = df["Bloqueado"].fillna(False).astype(str).str.strip().str.lower().isin(["sim", "true", "1", "s"])
+    df["Bloqueado"] = df["Bloqueado"].fillna(False).astype(str).str.strip().str.lower().isin(["sim", "true", "1", "s", "sinalizado"])
     
     df["Dias em Atraso"] = np.where(df["Vencimento"].notna(), (hoje - df["Vencimento"]).dt.days, np.nan)
     df["Mês Vencimento"] = df["Vencimento"].dt.strftime("%Y-%m")
@@ -242,81 +234,50 @@ def carregar_dados(file_source, sheet_name):
 
     return df
 
-
 def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Valor em Aberto", "Vencimento Mais Antigo", "Último Acionamento", "Observação"])
-
     base = df.copy()
-
     def concatenar_status(series):
-        valores = [str(x).strip() for x in series if str(x).strip() != ""]
-        valores_unicos = list(dict.fromkeys(valores))
-        return " | ".join(valores_unicos) if valores_unicos else "Não informado"
-
+        v = [str(x).strip() for x in series if str(x).strip() != ""]
+        u = list(dict.fromkeys(v))
+        return " | ".join(u) if u else "Não informado"
     def concatenar_historico(series):
-        valores = [str(x).strip() for x in series if str(x).strip() != ""]
-        valores_unicos = list(dict.fromkeys(valores))
-        return " | ".join(valores_unicos) if valores_unicos else ""
+        v = [str(x).strip() for x in series if str(x).strip() != ""]
+        u = list(dict.fromkeys(v))
+        return " | ".join(u) if u else ""
 
     tabela = (
         base.groupby(["UNIDADE", "Responsável", "Classe de Risco"], dropna=False)
-        .agg(
-            **{
-                "Valor em Aberto": ("Valor", "sum"),
-                "Vencimento Mais Antigo": ("Vencimento", "min"),
-                "Último Acionamento": ("Status", concatenar_status),
-                "Observação": ("Histórico de Acionamento", concatenar_historico)
-            }
-        )
-        .reset_index()
-        .sort_values("Valor em Aberto", ascending=False)
+        .agg(**{"Valor em Aberto": ("Valor", "sum"), "Vencimento Mais Antigo": ("Vencimento", "min"), "Último Acionamento": ("Status", concatenar_status), "Observação": ("Histórico de Acionamento", concatenar_historico)})
+        .reset_index().sort_values("Valor em Aberto", ascending=False)
     )
-
     tabela["Vencimento Mais Antigo"] = tabela["Vencimento Mais Antigo"].dt.strftime("%d/%m/%Y").fillna("Sem data")
-    tabela = tabela.rename(columns={"UNIDADE": "Unidade"})
-    return tabela
-
+    return tabela.rename(columns={"UNIDADE": "Unidade"})
 
 def excel_bytes(abas: dict[str, pd.DataFrame]) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for nome, tabela in abas.items():
-            tabela.to_excel(writer, index=False, sheet_name=nome[:31])
+        for nome, tabela in abas.items(): tabela.to_excel(writer, index=False, sheet_name=nome[:31])
     return output.getvalue()
 
-
 # Cabeçalho da Aplicação
-st.markdown(
-    f"""
-    <div class='hero'>
-        <h1>Dashboard da Carteira de Cobrança ISP</h1>
-        <p>Conectado como: <b>{st.session_state.usuario_email}</b> | Domínio Verificado ✔️</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(f"<div class='hero'><h1>Dashboard da Carteira de Cobrança ISP</h1><p>Conectado como: <b>{st.session_state.usuario_email}</b> | Domínio Verificado ✔️</p></div>", unsafe_allow_html=True)
 
-# 4. Barra Lateral (Sidebar) de Configuração
+# Barra Lateral (Sidebar) de Configuração
 with st.sidebar:
     st.title("Painel de Controle")
-    
     NOME_ARQUIVO_EXCEL = "Base de cobrança - Teste.xlsb" 
-    
-    # Busca com caminho absoluto dinâmico baseado no script
     caminho_base_local = Path(__file__).parent / NOME_ARQUIVO_EXCEL
     
     if caminho_base_local.exists():
         fonte = caminho_base_local
-        fonte_label = "Base Local Binária (.xlsb)"
-        st.success(f"✔️ Dados carregados com sucesso")
+        st.success(f"✔️ Arquivo físico lido")
     else:
-        st.warning("⚠️ Arquivo '.xlsb' oficial não encontrado na pasta. Use o envio temporário:")
-        uploaded = st.file_uploader("Selecione o arquivo .xlsb", type=["xlsb"])
-        fonte = uploaded
-        fonte_label = "Upload manual temporário"
+        st.warning("⚠️ Arquivo não localizado na raiz. Faça o upload manual abaixo:")
+        fonte = st.file_uploader("Selecione o arquivo .xlsb", type=["xlsb"])
 
-    if st.button("🔄 Atualizar / Limpar Cache", use_container_width=True):
+    if st.button("🔄 Forçar Recarregamento Total (Limpar Cache)", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
         
@@ -325,31 +286,31 @@ with st.sidebar:
         st.rerun()
 
 if fonte is None:
-    st.error(f"Por favor, certifique-se de que o arquivo '{NOME_ARQUIVO_EXCEL}' está salvo na mesma pasta deste script.")
+    st.error(f"Por favor, faça o upload do arquivo '{NOME_ARQUIVO_EXCEL}' ou salve-o na mesma pasta.")
     st.stop()
 
 try:
-    abas_disponiveis = get_sheet_names(fonte)
+    df = carregar_dados(fonte)
 except Exception as e:
-    st.error(f"Não foi possível abrir o arquivo binário Excel: {e}")
+    st.error(f"Erro crítico ao processar planilha: {e}")
     st.stop()
 
-if SHEET_NAME not in abas_disponiveis:
-    st.error(f"A aba '{SHEET_NAME}' não foi encontrada no arquivo. Verifique o nome da aba.")
-    st.stop()
-
-try:
-    df = carregar_dados(fonte, SHEET_NAME)
-except Exception as e:
-    st.error(f"Erro ao tratar os dados da planilha: {e}")
+# --- BLINDAGEM DE DIAGNÓSTICO ---
+# Se mesmo com tudo o DataFrame vier vazio, mostra o que tem dentro do arquivo pro usuário descobrir o motivo
+if df.empty or df["Valor"].sum() == 0:
+    st.error("🚨 ATENÇÃO: O arquivo Excel foi lido com sucesso, mas o volume total extraído está zerado!")
+    st.write("Isso acontece se a planilha nova estiver sem dados ou se as colunas mudaram radicalmente de nome.")
+    st.write("**Colunas identificadas no seu arquivo novo:**", list(df.columns))
+    st.write("Abaixo está uma prévia das primeiras linhas detectadas no seu arquivo para auditoria:")
+    st.dataframe(df.head(5))
     st.stop()
 
 # Filtros Dinâmicos na Sidebar
 with st.sidebar:
     classes = sorted(df["Classe de Risco"].dropna().astype(str).unique().tolist())
     classe_sel = st.multiselect("Classe de Risco", classes, default=classes)
-    apenas_vencidos = st.toggle("Apenas vencidos", value=True)
-    apenas_abertos = st.toggle("Apenas em aberto", value=True)
+    apenas_vencidos = st.toggle("Apenas vencidos", value=False) # Mudado para False para evitar zerar por padrão
+    apenas_abertos = st.toggle("Apenas em aberto", value=False)   # Mudado para False para evitar zerar por padrão
 
 unidades_disponiveis = sorted(df["UNIDADE"].dropna().astype(str).unique().tolist())
 st.write("**Filtrar por UNIDADE:**")
@@ -362,14 +323,14 @@ if classe_sel: base = base[base["Classe de Risco"].isin(classe_sel)]
 if apenas_vencidos: base = base[base["Vencido"]]
 if apenas_abertos: base = base[base["Em Aberto"]]
 
+# KPIs
 valor_total = float(base["Valor"].sum())
 clientes_distintos = int(base["Responsável"].nunique())
 titulos_aberto = int(len(base))
 clientes_bloqueados = int(base.loc[base["Bloqueado"], "Responsável"].nunique())
 
-# Renderização dos KPIs
 k1, k2, k3, k4 = st.columns(4)
-for col, titulo, valor, rodape in [(k1, "Valor Total da Carteira", brl_short(valor_total), brl(valor_total)), (k2, "Clientes Distintos", f"{clientes_distintos:,}".replace(",", "."), "Responsáveis únicos"), (k3, "Títulos em Aberto", f"{titulos_aberto:,}".replace(",", "."), "Registros filtrados"), (k4, "Clientes Bloqueados", f"{clientes_bloqueados:,}".replace(",", "."), "Coluna Bloqueado = Sim")]:
+for col, titulo, valor, rodape in [(k1, "Valor Total da Carteira", brl_short(valor_total), brl(valor_total)), (k2, "Clientes Distintos", f"{clientes_distintos:,}".replace(",", "."), "Responsáveis únicos"), (k3, "Títulos Filtrados", f"{titulos_aberto:,}".replace(",", "."), "Registros"), (k4, "Clientes Bloqueados", f"{clientes_bloqueados:,}".replace(",", "."), "Bloqueado = Sim")]:
     with col: st.markdown(f"<div class='kpi-card'><div class='kpi-label'>{titulo}</div><div class='kpi-value'>{valor}</div><div class='kpi-foot'>{rodape}</div></div>", unsafe_allow_html=True)
 
 st.markdown("<div class='section-title'>Visualizações</div>", unsafe_allow_html=True)
@@ -384,7 +345,7 @@ with c1:
     funil_df["Pct"] = np.where(valor_total > 0, funil_df["Valor"] / valor_total, 0)
     textos = [brl_short(v) if i == 0 else f"{brl_short(v)} | {p:.1%}" for i, (v, p) in enumerate(zip(funil_df["Valor"], funil_df["Pct"]))]
     fig_funil = go.Figure(go.Funnel(y=funil_df["Status"], x=funil_df["Valor"], text=textos, textposition="inside", marker={"color": [ISP_GREEN_DARK] + [ISP_GREEN_MID] * max(len(funil_df) - 1, 0)}, connector={"line": {"color": ISP_GREEN_SOFT, "width": 1.2}}, opacity=0.94))
-    fig_funil.update_layout(title="Resumo por Status", height=430, margin=dict(l=130, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), yaxis=dict(visible=True, automargin=True), xaxis=dict(visible=True, automargin=True))
+    fig_funil.update_layout(title="Resumo por Status", height=430, margin=dict(l=130, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
     st.plotly_chart(fig_funil, use_container_width=True, theme=None)
 
 with c2:
@@ -392,29 +353,8 @@ with c2:
     mes_df["Rótulo"] = mes_df["Valor"].apply(lambda v: f"{brl_short(v)} | {pct(v, valor_total)}")
     fig_mes = px.bar(mes_df, x="Valor", y="Mês Vencimento", orientation="h", text="Rótulo", color_discrete_sequence=[ISP_GREEN])
     fig_mes.update_traces(textposition="inside")
-    fig_mes.update_layout(title="Mês de Vencimento vs Valor", height=430, margin=dict(l=100, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), xaxis=dict(title="Valor Acumulado", visible=True, automargin=True), yaxis=dict(title="Meses de Vencimento", visible=True, automargin=True))
+    fig_mes.update_layout(title="Mês de Vencimento vs Valor", height=430, margin=dict(l=100, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
     st.plotly_chart(fig_mes, use_container_width=True, theme=None)
-
-c3, c4 = st.columns([1.15, 0.85])
-with c3:
-    risco_df = base.groupby("Classe de Risco", as_index=False)["Valor"].sum().sort_values("Classe de Risco", ascending=True)
-    risco_df["Rótulo"] = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
-    fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor", text="Rótulo", color="Valor", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
-    fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False, xaxis=dict(title="Classes de Risco", visible=True, automargin=True), yaxis=dict(title="Volume Financeiro", visible=True, automargin=True))
-    st.plotly_chart(fig_risco, use_container_width=True, theme=None)
-
-with c4:
-    st.markdown("<div class='section-title'>Indicadores adicionais</div>", unsafe_allow_html=True)
-    atraso_medio = base.loc[base["Dias em Atraso"].notna(), "Dias em Atraso"].mean()
-    maior_unidade = base.groupby("UNIDADE", as_index=False)["Valor"].sum().sort_values("Valor", ascending=False).head(1)
-    mais_antigo = base["Vencimento"].min()
-    st.metric("Atraso médio", f"{0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias")
-    st.metric("Vencimento mais antigo", mais_antigo.strftime("%d/%m/%Y") if pd.notna(mais_antigo) else "Sem data")
-    if not maior_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor"]))
-    resumo = base.groupby("Status", as_index=False)["Valor"].sum().sort_values("Valor", ascending=False).head(5)
-    resumo = resumo[resumo["Status"] != ""]
-    resumo["Valor"] = resumo["Valor"].apply(brl)
-    st.dataframe(resumo, use_container_width=True, hide_index=True)
 
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
@@ -423,9 +363,5 @@ tabela_bloq = montar_tabela(base[base["Bloqueado"]])
 aba1, aba2 = st.tabs(["Carteira Total", "Casos Bloqueados"])
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
 with aba2:
     st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
-
-st.download_button("Baixar ambas as tabelas em Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

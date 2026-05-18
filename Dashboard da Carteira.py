@@ -186,7 +186,7 @@ def carregar_dados(file_source):
         "Valor": ["valor", "val", "total", "valor em aberto", "saldo"],
         "Lançamento": ["lançamento", "lancamento", "dt_lanc", "data"],
         "Status": ["status", "situação", "situacao"],
-        "Histórico de Acionamento": ["histórico", "historico", "acionamento", "observação", "observacao", "obs"],
+        "Histórico de Acionamento": ["histórico de acionamento", "histórico", "historico", "acionamento", "observação", "observacao", "obs"],
         "Classe de Risco": ["classe de risco", "risco", "classe"],
         "Bloqueado": ["bloqueado", "bloq", "suspenso"]
     }
@@ -194,7 +194,7 @@ def carregar_dados(file_source):
     for col_padrao, sinonimos in mapeamento.items():
         if col_padrao not in df.columns:
             for col_existente in df.columns:
-                if col_existente.lower() in sinonimos or any(s in col_existente.lower() for s in sinonimos):
+                if col_existente.lower() in sinonimos or any(s == col_existente.lower() for s in sinonimos):
                     df = df.rename(columns={col_existente: col_padrao})
                     break
 
@@ -202,6 +202,9 @@ def carregar_dados(file_source):
     for col in colunas_esperadas:
         if col not in df.columns:
             df[col] = np.nan
+
+    # Força a coluna mapeada de histórico a virar texto limpo sem nans estranhos
+    df["Histórico de Acionamento"] = df["Histórico de Acionamento"].fillna("").astype(str).str.strip()
 
     for col_data in ["Vencimento", "Lançamento"]:
         if pd.api.types.is_numeric_dtype(df[col_data]):
@@ -211,7 +214,7 @@ def carregar_dados(file_source):
 
     df["Valor"] = parse_valor(df["Valor"]).fillna(0)
 
-    for col in ["Responsável", "UNIDADE", "Status", "Classe de Risco", "Histórico de Acionamento"]:
+    for col in ["Responsável", "UNIDADE", "Status", "Classe de Risco"]:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
     df["Responsável"] = df["Responsável"].replace("", "Não informado")
@@ -234,19 +237,28 @@ def carregar_dados(file_source):
 def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Valor em Aberto", "Vencimento Mais Antigo", "Último Acionamento", "Observação"])
+    
     base = df.copy()
+    
     def concatenar_status(series):
-        v = [str(x).strip() for x in series if str(x).strip() != ""]
+        v = [str(x).strip() for x in series if str(x).strip() != "" and str(x).lower() != "nan"]
         u = list(dict.fromkeys(v))
         return " | ".join(u) if u else "Não informado"
+        
+    # CORREÇÃO DA OBSERVAÇÃO: Filtra estritamente strings válidas da planilha e evita injetar nomes de colunas
     def concatenar_historico(series):
-        v = [str(x).strip() for x in series if str(x).strip() != ""]
+        v = [str(x).strip() for x in series if str(x).strip() != "" and str(x).lower() != "nan" and str(x).lower() != "histórico de acionamento"]
         u = list(dict.fromkeys(v))
-        return " | ".join(u) if u else ""
+        return " | ".join(u) if u else "Sem observações"
 
     tabela = (
         base.groupby(["UNIDADE", "Responsável", "Classe de Risco"], dropna=False)
-        .agg(**{"Valor em Aberto": ("Valor", "sum"), "Vencimento Mais Antigo": ("Vencimento", "min"), "Último Acionamento": ("Status", concatenar_status), "Observação": ("Histórico de Acionamento", concatenar_historico)})
+        .agg(**{
+            "Valor em Aberto": ("Valor", "sum"), 
+            "Vencimento Mais Antigo": ("Vencimento", "min"), 
+            "Último Acionamento": ("Status", concatenar_status), 
+            "Observação": ("Histórico de Acionamento", concatenar_historico)
+        })
         .reset_index().sort_values("Valor em Aberto", ascending=False)
     )
     tabela["Vencimento Mais Antigo"] = tabela["Vencimento Mais Antigo"].dt.strftime("%d/%m/%Y").fillna("Sem data")
@@ -350,11 +362,11 @@ with c2:
     fig_mes.update_layout(title="Mês de Vencimento vs Valor", height=430, margin=dict(l=100, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
     st.plotly_chart(fig_mes, use_container_width=True, theme=None)
 
-# Gráficos (Linha 2 - INCLUINDO CLASSE DE RISCO)
+# Gráficos (Linha 2)
 c3, c4 = st.columns([1.15, 0.85])
 with c3:
     risco_df = base.groupby("Classe de Risco", as_index=False)["Valor"].sum().sort_values("Classe de Risco", ascending=True)
-    risco_df["Rótulo"] = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
+    risco_df["Rótulo"] = risk_df = risco_df["Valor"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
     fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor", text="Rótulo", color="Valor", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
     fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
     st.plotly_chart(fig_risco, use_container_width=True, theme=None)

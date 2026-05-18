@@ -173,14 +173,13 @@ def carregar_dados(file_source):
     df = df.dropna(how='all')
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Mapeamento Cirúrgico atualizado para focar no "Valor Original"
     df = df.rename(columns={
         "UNIDADE": "UNIDADE",
         "Responsável": "Responsável",
         "Classe de Risco": "Classe de Risco",
         "Status": "Status",
         "Histórico do Acionamento": "Historico_Real",
-        "Valor Original": "Valor_Divida" # <--- ALTERAÇÃO ALVO DEFINITIVA
+        "Valor Original": "Valor_Divida"
     })
 
     if "Valor_Divida" not in df.columns and "Valor" in df.columns:
@@ -262,7 +261,6 @@ def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
         u = list(dict.fromkeys(v))
         return " | ".join(u) if u else "Sem observações"
 
-    # Agrupamento para remover duplicidade de histórico por título/chave
     if "Chave" in base.columns:
         sub_agrupado = base.groupby(["UNIDADE", "Responsável", "Classe de Risco", "Chave"], dropna=False).agg({
             "Valor_Divida": "max",
@@ -354,7 +352,7 @@ if "Chave" in base.columns:
 else:
     base_unicos_kpi = base
 
-# KPIs baseados nos valores do "Valor Original" sem linhas de histórico duplicadas
+# KPIs baseados nos valores do "Valor Original"
 valor_total = float(base_unicos_kpi["Valor_Divida"].sum())
 clientes_distintos = int(base["Responsável"].nunique())
 titulos_aberto = int(len(base_unicos_kpi))
@@ -403,7 +401,8 @@ with c4:
     mais_antigo = base_unicos_kpi["Data_Vencimento_Tratada"].min()
     st.metric("Atraso médio", f"{0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias")
     st.metric("Vencimento mais antigo", mais_antigo.strftime("%d/%m/%Y") if pd.notna(mais_antigo) else "Sem data")
-    if not mayor_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor_Divida"]))
+    # CORREÇÃO DA CONDICIONAL DA VARIÁVEL:
+    if not maior_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor_Divida"]))
 
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)

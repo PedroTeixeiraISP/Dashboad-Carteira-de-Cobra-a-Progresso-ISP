@@ -229,8 +229,11 @@ def carregar_dados(file_source):
     else:
         df["Vencido_Bool"] = df["Data_Vencimento_Tratada"].notna() & (df["Data_Vencimento_Tratada"] < hoje)
 
-    df["Bloqueado_Bool"] = df["Bloqueado"].fillna(False).astype(str).str.strip().str.lower().isin(["sim", "true", "1", "s", "sinalizado"])
-    
+    if "Bloqueado" in df.columns:
+        df["Bloqueado_Bool"] = df["Bloqueado"].fillna(False).astype(str).str.strip().str.lower().isin(["sim", "true", "1", "s", "sinalizado"])
+    else:
+        df["Bloqueado_Bool"] = False
+        
     if "Dias em Atraso" in df.columns:
         df["Dias_Atraso_Num"] = pd.to_numeric(df["Dias em Atraso"], errors="coerce").fillna(0)
     else:
@@ -337,12 +340,34 @@ with st.sidebar:
     apenas_abertos = st.toggle("Apenas em aberto", value=False)
 
 unidades_disponiveis = sorted(df["UNIDADE"].dropna().astype(str).unique().tolist())
-st.write("**Filtrar por UNIDADE:**")
-unidade_sel = st.pills(label="Unidades Filtro", options=unidades_disponiveis, default=unidades_disponiveis, selection_mode="multi", label_visibility="collapsed")
+
+# Alinhamento do Título do Filtro e Botão de Limpeza lado a lado
+lbl_col1, lbl_col2 = st.columns([8, 2])
+with lbl_col1:
+    st.write("**Filtrar por UNIDADE:**")
+with lbl_col2:
+    # Estado para gerenciar se devemos forçar o reset das unidades
+    if "limpar_unidades" not in st.session_state:
+        st.session_state.limpar_unidades = False
+
+    if st.button("🧹 Limpar", type="secondary", use_container_width=True):
+        st.session_state.limpar_unidades = True
+        st.rerun()
+
+# Define os valores padrão do pills dependendo do botão de limpar
+if st.session_state.limpar_unidades:
+    default_pills = []
+    st.session_state.limpar_unidades = False # Reseta o gatilho
+else:
+    default_pills = unidades_disponiveis
+
+unidade_sel = st.pills(label="Unidades Filtro", options=unidades_disponiveis, default=default_pills, selection_mode="multi", label_visibility="collapsed")
 
 # Aplicação dos Filtros
 base = df.copy()
 if unidade_sel: base = base[base["UNIDADE"].isin(unidade_sel)]
+elif default_pills == []: base = base[base["UNIDADE"].isin([])] # Se limpou, mostra vazio
+
 if classe_sel: base = base[base["Classe de Risco"].isin(classe_sel)]
 if apenas_vencidos: base = base[base["Vencido_Bool"]]
 if apenas_abertos: base = base[base["Em_Aberto_Bool"]]
@@ -386,7 +411,7 @@ with c2:
     st.plotly_chart(fig_mes, use_container_width=True, theme=None)
 
 # Gráficos (Linha 2)
-c3, c4 = st.columns([1.15, 0.85])
+c3, c4 = st.columns([1.05, 0.95])
 with c3:
     risco_df = base_unicos_kpi.groupby("Classe de Risco", as_index=False)["Valor_Divida"].sum().sort_values("Classe de Risco", ascending=True)
     risco_df["Rótulo"] = risco_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
@@ -395,14 +420,56 @@ with c3:
     st.plotly_chart(fig_risco, use_container_width=True, theme=None)
 
 with c4:
-    st.markdown("<div class='section-title' style='margin-top:0;'>Indicadores Adicionais</div>", unsafe_allow_html=True)
-    atraso_medio = base_unicos_kpi.loc[base_unicos_kpi["Dias_Atraso_Num"] > 0, "Dias_Atraso_Num"].mean()
-    maior_unidade = base_unicos_kpi.groupby("UNIDADE", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False).head(1)
-    mais_antigo = base_unicos_kpi["Data_Vencimento_Tratada"].min()
-    st.metric("Atraso médio", f"{0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias")
-    st.metric("Vencimento mais antigo", mais_antigo.strftime("%d/%m/%Y") if pd.notna(mais_antigo) else "Sem data")
-    # CORREÇÃO DA CONDICIONAL DA VARIÁVEL:
-    if not maior_unidade.empty: st.metric("Unidade com maior exposição", maior_unidade.iloc[0]["UNIDADE"], brl_short(maior_unidade.iloc[0]["Valor_Divida"]))
+    st.markdown("<div class='section-title' style='margin-top:0;'>Análise de Parcelas em Aberto</div>", unsafe_allow_html=True)
+    
+    if not base.empty:
+        df_aberto = base[base["Em_Aberto_Bool"]] if "Em_Aberto_Bool" in base.columns else base
+        
+        if not df_aberto.empty:
+            # Agrupa por responsável para mapear a volumetria por cliente único
+            analise_resp = df_aberto.groupby("Responsável").agg(
+                Qtd_Parcelas=("Valor_Divida", "size"),
+                Valor_Total=("Valor_Divida", "sum")
+            ).reset_index()
+            
+            def categorizar_faixas(qtd):
+                if qtd == 1: return "1 parcela"
+                elif qtd == 2: return "2 parcelas"
+                elif qtd == 3: return "3 parcelas"
+                elif qtd == 4: return "4 parcelas"
+                else: return "+5 parcelas"
+                
+            analise_resp["Faixa"] = analise_resp["Qtd_Parcelas"].apply(categorizar_faixas)
+            
+            # Garante todas as linhas estruturadas mesmo que alguma faixa esteja zerada
+            resumo_faixas = analise_resp.groupby("Faixa").agg(
+                Qtd_Responsaveis=("Responsável", "nunique"),
+                Valor_Carteira=("Valor_Total", "sum")
+            ).reindex(["1 parcela", "2 parcelas", "3 parcelas", "4 parcelas", "+5 parcelas"], fill_value=0).reset_index()
+            
+            total_valor_faixas = resumo_faixas["Valor_Carteira"].sum()
+            resumo_faixas["% Carteira"] = resumo_faixas["Valor_Carteira"].apply(lambda x: pct(x, total_valor_faixas))
+            
+            resumo_exibicao = resumo_faixas.copy()
+            resumo_exibicao["Valor na Carteira"] = resumo_exibicao["Valor_Carteira"].apply(brl)
+            resumo_exibicao = resumo_exibicao.rename(columns={
+                "Faixa": "Parcelas em Aberto",
+                "Qtd_Responsaveis": "Qtd. Responsáveis"
+            })
+            
+            st.dataframe(
+                resumo_exibicao[["Parcelas em Aberto", "Qtd. Responsáveis", "Valor na Carteira", "% Carteira"]],
+                use_container_width=True,
+                hide_index=True,
+                height=245
+            )
+            
+            atraso_medio = base_unicos_kpi.loc[base_unicos_kpi["Dias_Atraso_Num"] > 0, "Dias_Atraso_Num"].mean()
+            st.caption(f"💡 Atraso médio geral da carteira selecionada: {0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias.")
+        else:
+            st.info("Nenhum título em aberto identificado para os filtros selecionados.")
+    else:
+        st.info("Sem dados para analisar os indicadores adicionais.")
 
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
@@ -416,4 +483,4 @@ with aba2:
     st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
 
-st.download_button("Baixar ambas as tabelas em Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.download_button("Baixar ambas as tabelas in Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

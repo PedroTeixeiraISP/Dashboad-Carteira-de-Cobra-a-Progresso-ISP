@@ -421,6 +421,25 @@ with c4:
     else:
         st.info("Sem dados para analisar os indicadores adicionais.")
 
+st.markdown("<div class='section-title'>Análise por Grupo</div>", unsafe_allow_html=True)
+g1, g2 = st.columns([1.15, 0.85])
+with g1:
+    grupo_df = base_unicos_kpi.groupby("Grupo", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False)
+    if not grupo_df.empty:
+        grupo_df["Rótulo"] = grupo_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)} | {pct(v, valor_total)}")
+        fig_grupo = px.bar(grupo_df, x="Grupo", y="Valor_Divida", text="Rótulo", color="Valor_Divida", color_continuous_scale=[[0, "#DFF3EC"], [1, ISP_GREEN_DARK]])
+        fig_grupo.update_layout(title="Valor por Grupo", height=430, margin=dict(l=40, r=40, t=50, b=80), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
+        fig_grupo.update_traces(textposition="outside")
+        st.plotly_chart(fig_grupo, use_container_width=True, theme=None)
+    else:
+        st.info("Sem dados para o gráfico por Grupo.")
+with g2:
+    if not grupo_df.empty:
+        fig_pie = px.pie(grupo_df, names="Grupo", values="Valor_Divida", hole=0.45, title="Participação por Grupo")
+        fig_pie.update_traces(textinfo="percent+label")
+        fig_pie.update_layout(height=430, paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
+        st.plotly_chart(fig_pie, use_container_width=True, theme=None)
+
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])

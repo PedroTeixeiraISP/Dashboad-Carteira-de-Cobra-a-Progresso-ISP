@@ -443,7 +443,7 @@ with g2:
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
-tabela_nao_aluno = montar_tabela(base[base["Grupo"].astype(str).str.contains("Não é aluno", case=False, na=False)])
+tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)])
 
 aba1, aba2, aba3 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno"])
 with aba1:

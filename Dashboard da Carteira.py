@@ -176,6 +176,37 @@ def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
     return tabela.rename(columns={"UNIDADE": "Unidade"})
 
 
+# --- NOVA FUNÇÃO: Visão detalhada por lançamento sem consolidar ---
+def montar_tabela_lancamentos(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"])
+
+    base = df.copy()
+
+    # Renomear os campos principais para ficar claro
+    renomear = {
+        "UNIDADE": "Unidade",
+        "Valor_Divida": "Valor do Lançamento",
+        "Data_Vencimento_Tratada": "Vencimento",
+        "Historico_Real": "Descrição do Lançamento"
+    }
+    
+    tabela = base.rename(columns=renomear)
+
+    if "Vencimento" in tabela.columns:
+        tabela["Vencimento"] = tabela["Vencimento"].dt.strftime("%d/%m/%Y").fillna("Sem data")
+        
+    # Organizar colunas: colocar as essenciais no começo, e manter o resto para dar contexto completo
+    cols_base = ["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"]
+    cols_existentes = [c for c in cols_base if c in tabela.columns]
+    
+    # Adicionar colunas adicionais originais ocultando colunas de controle do app (que terminam em _Bool, _Txt, _Num)
+    cols_restantes = [c for c in tabela.columns if c not in cols_existentes and not c.endswith("_Bool") and not c.endswith("_Txt") and not c.endswith("_Num")]
+    
+    return tabela[cols_existentes + cols_restantes]
+# ------------------------------------------------------------------
+
+
 def excel_bytes(abas: dict[str, pd.DataFrame]) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -440,12 +471,18 @@ with g2:
         fig_pie.update_layout(height=430, paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
         st.plotly_chart(fig_pie, use_container_width=True, theme=None)
 
+
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
+
+# Geração das tabelas para exibição
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
 tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)])
+tabela_lancamentos = montar_tabela_lancamentos(base) # <- Nova Tabela
 
-aba1, aba2, aba3 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno"])
+# Adicionado a nova aba 'Visão por Lançamento'
+aba1, aba2, aba3, aba4 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno", "Visão por Lançamento"])
+
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
@@ -455,5 +492,20 @@ with aba2:
 with aba3:
     st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
+with aba4:
+    # Nova aba exibindo detalhe por linha sem consolidar
+    st.dataframe(tabela_lancamentos.style.format({"Valor do Lançamento": brl}), use_container_width=True, hide_index=True, height=430)
+    st.download_button("Baixar Visão por Lançamento (CSV)", tabela_lancamentos.to_csv(index=False).encode("utf-8-sig"), file_name="visao_por_lancamento.csv", mime="text/csv", use_container_width=True)
 
-st.download_button("Baixar ambas as tabelas em Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq, "Não é aluno": tabela_nao_aluno}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+# Botão global que também faz o download de todas as abas juntas no Excel, agora incluindo os Lançamentos
+st.download_button(
+    "Baixar todas as tabelas em Excel", 
+    data=excel_bytes({
+        "Carteira Total": tabela_total, 
+        "Casos Bloqueados": tabela_bloq, 
+        "Não é aluno": tabela_nao_aluno,
+        "Lançamentos Individuais": tabela_lancamentos # Aba adicional no arquivo exportado
+    }), 
+    file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", 
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)

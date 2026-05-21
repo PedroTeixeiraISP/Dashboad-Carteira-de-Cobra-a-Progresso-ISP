@@ -443,18 +443,17 @@ with g2:
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
+tabela_nao_aluno = montar_tabela(base[base["Grupo"].astype(str).str.contains("Não é aluno", case=False, na=False)])
 
-aba1, aba2 = st.tabs(["Carteira Total", "Casos Bloqueados"])
+aba1, aba2, aba3 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno"])
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
 with aba2:
     st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
+with aba3:
+    st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
+    st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
 
-st.download_button(
-    "Baixar ambas as tabelas em Excel",
-    data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq}),
-    file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+st.download_button("Baixar ambas as tabelas em Excel", data=excel_bytes({"Carteira Total": tabela_total, "Casos Bloqueados": tabela_bloq, "Não é aluno": tabela_nao_aluno}), file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

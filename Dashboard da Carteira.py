@@ -61,6 +61,16 @@ def parse_valor(serie: pd.Series) -> pd.Series:
 
 @st.cache_data(show_spinner=False)
 def carregar_dados(file_source):
+    # Adiciona timestamp da última modificação como parte da chave de cache
+    if isinstance(file_source, (str, Path)):
+        file_path = Path(file_source)
+        if file_path.exists():
+            file_mtime = file_path.stat().st_mtime
+        else:
+            file_mtime = None
+    else:
+        file_mtime = None
+    
     with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
         abas = xls.sheet_names
         aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
@@ -405,7 +415,7 @@ with c1:
     funil_df = pd.concat([topo, status_df], ignore_index=True)
     funil_df["Pct"] = np.where(valor_total > 0, funil_df["Valor_Divida"] / valor_total, 0)
     textos = [brl_short(v) if i == 0 else f"{brl_short(v)} | {p:.1%}" for i, (v, p) in enumerate(zip(funil_df["Valor_Divida"], funil_df["Pct"]))]
-    fig_funil = go.Figure(go.Funnel(y=funil_df["Status"], x=funil_df["Valor_Divida"], text=textos, textposition="inside", marker={"color": [ISP_GREEN_DARK] + [ISP_GREEN_MID] * max(len(funil_df) - 1, 0)}, connector={"line": {"color": ISP_GREEN_SOFT, "width": 1.2}}, opacity=0.94))
+    fig_funil = go.Figure(go.Funnel(y=funil_df["Status"], x=funil_df["Valor_Divida"], text=textos, textposition="inside", marker={"color": [ISP_GREEN_DARK] + [ISP_GREEN_MID] * max(len(funil_df) - 1, 0)}))
     fig_funil.update_layout(title="Resumo por Status", height=430, margin=dict(l=130, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
     st.plotly_chart(fig_funil, use_container_width=True, theme=None)
 
@@ -438,7 +448,7 @@ with c4:
                 elif qtd == 4: return "4 parcelas"
                 else: return "+5 parcelas"
             analise_resp["Faixa"] = analise_resp["Qtd_Parcelas"].apply(categorizar_faixas)
-            resumo_faixas = analise_resp.groupby("Faixa").agg(Qtd_Responsaveis=("Responsável", "nunique"), Valor_Carteira=("Valor_Total", "sum")).reindex(["1 parcela", "2 parcelas", "3 parcelas", "4 parcelas", "+5 parcelas"], fill_value=0).reset_index()
+            resumo_faixas = analise_resp.groupby("Faixa").agg(Qtd_Responsaveis=("Responsável", "nunique"), Valor_Carteira=("Valor_Total", "sum")).reindex(["1 parcela", "2 parcelas", "3 parcelas", "4 parcelas", "+5 parcelas"])
             total_valor_faixas = resumo_faixas["Valor_Carteira"].sum()
             resumo_faixas["% Carteira"] = resumo_faixas["Valor_Carteira"].apply(lambda x: pct(x, total_valor_faixas))
             resumo_exibicao = resumo_faixas.copy()

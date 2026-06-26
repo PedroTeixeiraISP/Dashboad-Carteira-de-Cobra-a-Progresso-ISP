@@ -1,6 +1,7 @@
 import io
-from pathlib import Path
+from io import BytesIO
 from datetime import datetime
+import requests
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -22,6 +23,8 @@ CARD = "#FFFFFF"
 TEXT = "#1F2937"
 MUTED = "#667085"
 BORDER = "rgba(11,107,83,0.10)"
+
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/PedroTeixeiraISP/Dashboad-Carteira-de-Cobra-a-Progresso-ISP/main/Base%20de%20cobran%C3%A7a%20-%20Teste.xlsb"
 
 
 def brl(value: float) -> str:
@@ -59,19 +62,16 @@ def parse_valor(serie: pd.Series) -> pd.Series:
     return pd.to_numeric(limpa, errors="coerce")
 
 
-@st.cache_data(show_spinner=False)
-def carregar_dados(file_source):
-    # Adiciona timestamp da última modificação como parte da chave de cache
-    if isinstance(file_source, (str, Path)):
-        file_path = Path(file_source)
-        if file_path.exists():
-            file_mtime = file_path.stat().st_mtime
-        else:
-            file_mtime = None
-    else:
-        file_mtime = None
-    
-    with pd.ExcelFile(file_source, engine="pyxlsb") as xls:
+@st.cache_data(show_spinner=False, ttl=300)
+def baixar_excel_bytes(url: str) -> bytes:
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    return response.content
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def carregar_dados(file_bytes: bytes):
+    with pd.ExcelFile(BytesIO(file_bytes), engine="pyxlsb") as xls:
         abas = xls.sheet_names
         aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
         df = pd.read_excel(xls, sheet_name=aba_alvo)
@@ -138,7 +138,11 @@ def carregar_dados(file_source):
     if "Dias em Atraso" in df.columns:
         df["Dias_Atraso_Num"] = pd.to_numeric(df["Dias em Atraso"], errors="coerce").fillna(0)
     else:
-        df["Dias_Atraso_Num"] = np.where(df["Data_Vencimento_Tratada"].notna(), (hoje - df["Data_Vencimento_Tratada"]).dt.days, 0)
+        df["Dias_Atraso_Num"] = np.where(
+            df["Data_Vencimento_Tratada"].notna(),
+            (hoje - df["Data_Vencimento_Tratada"]).dt.days,
+            0
+        )
 
     if "Mês Vencimento" in df.columns:
         df["Mes_Vencimento_Txt"] = df["Mês Vencimento"].fillna("Sem data").astype(str)
@@ -186,35 +190,29 @@ def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
     return tabela.rename(columns={"UNIDADE": "Unidade"})
 
 
-# --- NOVA FUNÇÃO: Visão detalhada por lançamento sem consolidar ---
 def montar_tabela_lancamentos(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"])
 
     base = df.copy()
 
-    # Renomear os campos principais para ficar claro
     renomear = {
         "UNIDADE": "Unidade",
         "Valor_Divida": "Valor do Lançamento",
         "Data_Vencimento_Tratada": "Vencimento",
         "Historico_Real": "Descrição do Lançamento"
     }
-    
+
     tabela = base.rename(columns=renomear)
 
     if "Vencimento" in tabela.columns:
         tabela["Vencimento"] = tabela["Vencimento"].dt.strftime("%d/%m/%Y").fillna("Sem data")
-        
-    # Organizar colunas: colocar as essenciais no começo, e manter o resto para dar contexto completo
+
     cols_base = ["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"]
     cols_existentes = [c for c in cols_base if c in tabela.columns]
-    
-    # Adicionar colunas adicionais originais ocultando colunas de controle do app (que terminam em _Bool, _Txt, _Num)
     cols_restantes = [c for c in tabela.columns if c not in cols_existentes and not c.endswith("_Bool") and not c.endswith("_Txt") and not c.endswith("_Num")]
-    
+
     return tabela[cols_existentes + cols_restantes]
-# ------------------------------------------------------------------
 
 
 def excel_bytes(abas: dict[str, pd.DataFrame]) -> bytes:
@@ -265,19 +263,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(f"<div class='hero'><h1>Dashboard da Carteira de Cobrança ISP</h1><p>Conectado como: <b>validação por domínio institucional</b></p></div>", unsafe_allow_html=True)
+st.markdown(
+    f"<div class='hero'><h1>Dashboard da Carteira de Cobrança ISP</h1><p>Conectado ao arquivo do GitHub Raw | atualização automática por cache TTL</p></div>",
+    unsafe_allow_html=True
+)
 
 with st.sidebar:
     st.title("Painel de Controle")
-    NOME_ARQUIVO_EXCEL = "Base de cobrança - Teste.xlsb"
-    caminho_base_local = Path(__file__).parent / NOME_ARQUIVO_EXCEL if "__file__" in globals() else Path(NOME_ARQUIVO_EXCEL)
-
-    if caminho_base_local.exists():
-        fonte = caminho_base_local
-        st.success("✔️ Arquivo físico lido")
-    else:
-        st.warning("⚠️ Arquivo não localizado na raiz. Faça o upload manual abaixo:")
-        fonte = st.file_uploader("Selecione o arquivo .xlsb", type=["xlsb"])
+    st.caption("Fonte de dados: arquivo .xlsb do GitHub")
+    st.code(GITHUB_RAW_URL, language="text")
 
     if st.button("🔄 Forçar Recarregamento Total (Limpar Cache)", use_container_width=True):
         st.cache_data.clear()
@@ -286,14 +280,11 @@ with st.sidebar:
     if st.button("🚪 Sair do Painel", use_container_width=True):
         st.rerun()
 
-if fonte is None:
-    st.error(f"Por favor, faça o upload do arquivo '{NOME_ARQUIVO_EXCEL}' ou salve-o na mesma pasta.")
-    st.stop()
-
 try:
-    df = carregar_dados(fonte)
+    file_bytes = baixar_excel_bytes(GITHUB_RAW_URL)
+    df = carregar_dados(file_bytes)
 except Exception as e:
-    st.error(f"Erro crítico ao processar planilha: {e}")
+    st.error(f"Erro crítico ao processar planilha do GitHub: {e}")
     st.stop()
 
 if df.empty or df["Valor_Divida"].sum() == 0:
@@ -451,7 +442,7 @@ with c4:
             resumo_faixas = analise_resp.groupby("Faixa").agg(Qtd_Responsaveis=("Responsável", "nunique"), Valor_Carteira=("Valor_Total", "sum")).reindex(["1 parcela", "2 parcelas", "3 parcelas", "4 parcelas", "+5 parcelas"])
             total_valor_faixas = resumo_faixas["Valor_Carteira"].sum()
             resumo_faixas["% Carteira"] = resumo_faixas["Valor_Carteira"].apply(lambda x: pct(x, total_valor_faixas))
-            resumo_exibicao = resumo_faixas.copy()
+            resumo_exibicao = resumo_faixas.reset_index().copy()
             resumo_exibicao["Valor na Carteira"] = resumo_exibicao["Valor_Carteira"].apply(brl)
             resumo_exibicao = resumo_exibicao.rename(columns={"Faixa": "Parcelas em Aberto", "Qtd_Responsaveis": "Qtd. Responsáveis"})
             st.dataframe(resumo_exibicao[["Parcelas em Aberto", "Qtd. Responsáveis", "Valor na Carteira", "% Carteira"]], use_container_width=True, hide_index=True, height=245)
@@ -481,41 +472,42 @@ with g2:
         fig_pie.update_layout(height=430, paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
         st.plotly_chart(fig_pie, use_container_width=True, theme=None)
 
-
 st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
 
-# Geração das tabelas para exibição
 tabela_total = montar_tabela(base)
 tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
-tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)])
-tabela_lancamentos = montar_tabela_lancamentos(base) # <- Nova Tabela
+tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)]) if "Status Aluno" in base.columns else pd.DataFrame()
+tabela_lancamentos = montar_tabela_lancamentos(base)
 
-# Adicionado a nova aba 'Visão por Lançamento'
 aba1, aba2, aba3, aba4 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno", "Visão por Lançamento"])
 
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
+
 with aba2:
     st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
+
 with aba3:
-    st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
+    if not tabela_nao_aluno.empty:
+        st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
+        st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
+    else:
+        st.info("A coluna 'Status Aluno' não existe ou não há registros com 'Não é aluno'.")
+
 with aba4:
-    # Nova aba exibindo detalhe por linha sem consolidar
     st.dataframe(tabela_lancamentos.style.format({"Valor do Lançamento": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Visão por Lançamento (CSV)", tabela_lancamentos.to_csv(index=False).encode("utf-8-sig"), file_name="visao_por_lancamento.csv", mime="text/csv", use_container_width=True)
 
-# Botão global que também faz o download de todas as abas juntas no Excel, agora incluindo os Lançamentos
 st.download_button(
-    "Baixar todas as tabelas em Excel", 
+    "Baixar todas as tabelas em Excel",
     data=excel_bytes({
-        "Carteira Total": tabela_total, 
-        "Casos Bloqueados": tabela_bloq, 
-        "Não é aluno": tabela_nao_aluno,
-        "Lançamentos Individuais": tabela_lancamentos # Aba adicional no arquivo exportado
-    }), 
-    file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", 
+        "Carteira Total": tabela_total,
+        "Casos Bloqueados": tabela_bloq,
+        "Não é aluno": tabela_nao_aluno if not tabela_nao_aluno.empty else pd.DataFrame({"Mensagem": ["Sem dados disponíveis"]}),
+        "Lançamentos Individuais": tabela_lancamentos
+    }),
+    file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )

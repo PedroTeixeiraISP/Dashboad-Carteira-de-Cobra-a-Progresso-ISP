@@ -501,8 +501,8 @@ tabela_lancamentos = montar_tabela_lancamentos(base)
 # Criação das abas
 aba1, aba2, aba3, aba4, aba5 = st.tabs([
     "Carteira Total", 
-    "Casos Bloqueados", 
-    "Aba Bloqueados (Excel)", 
+    "Responsáveis Bloqueados", 
+    "Alunos Bloqueados", 
     "Responsável = Não é aluno", 
     "Visão por Lançamento"
 ])

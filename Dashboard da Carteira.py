@@ -73,9 +73,20 @@ def baixar_excel_bytes(url: str) -> bytes:
 def carregar_dados(file_bytes: bytes):
     with pd.ExcelFile(BytesIO(file_bytes), engine="pyxlsb") as xls:
         abas = xls.sheet_names
+        
+        # 1. Carregar Aba Principal
         aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
         df = pd.read_excel(xls, sheet_name=aba_alvo)
 
+        # 2. Carregar Aba de Bloqueados
+        df_bloqueados_aba = pd.DataFrame()
+        aba_bloq_alvo = next((a for a in abas if "bloqueado" in a.lower()), None)
+        if aba_bloq_alvo:
+            df_bloqueados_aba = pd.read_excel(xls, sheet_name=aba_bloq_alvo)
+            df_bloqueados_aba = df_bloqueados_aba.dropna(how="all")
+            df_bloqueados_aba.columns = [str(c).strip() for c in df_bloqueados_aba.columns]
+
+    # --- Tratamento da Base Principal ---
     df = df.dropna(how="all")
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -151,7 +162,7 @@ def carregar_dados(file_bytes: bytes):
     else:
         df["Mes_Vencimento_Txt"] = "Sem data"
 
-    return df
+    return df, df_bloqueados_aba
 
 
 def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
@@ -282,7 +293,7 @@ with st.sidebar:
 
 try:
     file_bytes = baixar_excel_bytes(GITHUB_RAW_URL)
-    df = carregar_dados(file_bytes)
+    df, df_bloqueados_aba = carregar_dados(file_bytes)
 except Exception as e:
     st.error(f"Erro crítico ao processar planilha do GitHub: {e}")
     st.stop()
@@ -375,6 +386,13 @@ if apenas_vencidos:
     base = base[base["Vencido_Bool"]]
 if apenas_abertos:
     base = base[base["Em_Aberto_Bool"]]
+
+# Filtrar também a aba extra de Bloqueados com base nos filtros aplicados (se houver colunas compatíveis)
+base_bloqueados_aba = df_bloqueados_aba.copy()
+if not base_bloqueados_aba.empty:
+    col_unid = next((c for c in base_bloqueados_aba.columns if "unidade" in c.lower()), None)
+    if col_unid and st.session_state.unidade_sel:
+        base_bloqueados_aba = base_bloqueados_aba[base_bloqueados_aba[col_unid].astype(str).isin(st.session_state.unidade_sel)]
 
 if "Chave" in base.columns:
     base_unicos_kpi = base.drop_duplicates(subset=["Chave"])
@@ -479,7 +497,14 @@ tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
 tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)]) if "Status Aluno" in base.columns else pd.DataFrame()
 tabela_lancamentos = montar_tabela_lancamentos(base)
 
-aba1, aba2, aba3, aba4 = st.tabs(["Carteira Total", "Casos Bloqueados", "Responsável = Não é aluno", "Visão por Lançamento"])
+# Criação das abas, incluindo a nova aba "Aba Bloqueados (Excel)"
+aba1, aba2, aba3, aba4, aba5 = st.tabs([
+    "Carteira Total", 
+    "Casos Bloqueados", 
+    "Aba Bloqueados (Excel)", 
+    "Responsável = Não é aluno", 
+    "Visão por Lançamento"
+])
 
 with aba1:
     st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
@@ -490,21 +515,30 @@ with aba2:
     st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
 
 with aba3:
+    if not base_bloqueados_aba.empty:
+        st.dataframe(base_bloqueados_aba, use_container_width=True, hide_index=True, height=430)
+        st.download_button("Baixar Aba Bloqueados (CSV)", base_bloqueados_aba.to_csv(index=False).encode("utf-8-sig"), file_name="aba_bloqueados.csv", mime="text/csv", use_container_width=True)
+    else:
+        st.info("A aba 'Bloqueados' não foi encontrada na planilha excel ou está sem registros.")
+
+with aba4:
     if not tabela_nao_aluno.empty:
         st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
         st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
     else:
         st.info("A coluna 'Status Aluno' não existe ou não há registros com 'Não é aluno'.")
 
-with aba4:
+with aba5:
     st.dataframe(tabela_lancamentos.style.format({"Valor do Lançamento": brl}), use_container_width=True, hide_index=True, height=430)
     st.download_button("Baixar Visão por Lançamento (CSV)", tabela_lancamentos.to_csv(index=False).encode("utf-8-sig"), file_name="visao_por_lancamento.csv", mime="text/csv", use_container_width=True)
 
+# Inclusão da aba Bloqueados no relatório Excel unificado
 st.download_button(
     "Baixar todas as tabelas em Excel",
     data=excel_bytes({
         "Carteira Total": tabela_total,
         "Casos Bloqueados": tabela_bloq,
+        "Aba Bloqueados": base_bloqueados_aba if not base_bloqueados_aba.empty else pd.DataFrame({"Mensagem": ["Sem dados disponíveis"]}),
         "Não é aluno": tabela_nao_aluno if not tabela_nao_aluno.empty else pd.DataFrame({"Mensagem": ["Sem dados disponíveis"]}),
         "Lançamentos Individuais": tabela_lancamentos
     }),

@@ -80,7 +80,7 @@ def carregar_dados(file_bytes: bytes):
 
         # 2. Carregar Aba de Bloqueados
         df_bloqueados_aba = pd.DataFrame()
-        aba_bloq_alvo = next((a for a in abas if "bloqueado" in a.lower()), None)
+        aba_bloq_alvo = next((a for a in abas if "Bloqueados" in a.lower()), None)
         if aba_bloq_alvo:
             df_bloqueados_aba = pd.read_excel(xls, sheet_name=aba_bloq_alvo)
             df_bloqueados_aba = df_bloqueados_aba.dropna(how="all")

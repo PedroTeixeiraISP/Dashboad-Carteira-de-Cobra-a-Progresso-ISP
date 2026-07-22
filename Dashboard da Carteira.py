@@ -1,86 +1,56 @@
-import io
-from io import BytesIO
-from datetime import datetime
-import requests
-import numpy as np
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+from io import BytesIO
 
+# Configuração da página
 st.set_page_config(
-    page_title="Dashboard da Carteira | Online",
+    page_title="Dashboard Financeiro & Inadimplência",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="wide"
 )
 
-ISP_GREEN = "#0B6B53"
-ISP_GREEN_DARK = "#084C3D"
-ISP_GREEN_SOFT = "#DFF3EC"
-ISP_GREEN_MID = "#1F8A70"
-CARD = "#FFFFFF"
-TEXT = "#1F2937"
-MUTED = "#667085"
-BORDER = "rgba(11,107,83,0.10)"
+# -----------------------------------------------------------------------------
+# FUNÇÕES DE TRATAMENTO E CARREGAMENTO
+# -----------------------------------------------------------------------------
 
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/PedroTeixeiraISP/Dashboad-Carteira-de-Cobra-a-Progresso-ISP/main/Base%20de%20cobran%C3%A7a%20-%20Teste.xlsb"
-
-
-def brl(value: float) -> str:
-    value = 0 if pd.isna(value) else value
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def brl_short(value: float) -> str:
-    value = 0 if pd.isna(value) else value
-    v = abs(value)
-    if v >= 1_000_000_000:
-        return f"R$ {value/1_000_000_000:.2f} bi"
-    elif v >= 1_000_000:
-        return f"R$ {value/1_000_000:.2f} mi"
-    elif v >= 1_000:
-        return f"R$ {value/1_000:.1f} mil"
-    else:
-        return f"R$ {value:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def pct(part, total) -> str:
-    return f"{(part / total):.1%}" if total else "0,0%"
-
-
-def parse_valor(serie: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(serie):
-        return pd.to_numeric(serie, errors="coerce")
-    limpa = (
-        serie.astype(str)
-        .str.replace("R$", "", regex=False)
-        .str.replace(" ", "", regex=False)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-    )
-    return pd.to_numeric(limpa, errors="coerce")
+def parse_valor(s):
+    """Converte valores numéricos/monetários de string para float."""
+    if pd.api.types.is_numeric_dtype(s):
+        return s.astype(float)
+    
+    s = s.astype(str).str.strip()
+    s = s.str.replace("R$", "", regex=False).str.replace(" ", "", regex=False)
+    
+    # Trata formato brasileiro (1.000,00 -> 1000.00)
+    s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce")
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def baixar_excel_bytes(url: str) -> bytes:
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-    return response.content
+def carregar_dados_github(url_raw: str):
+    """Baixa o arquivo do GitHub e trata as abas e colunas."""
+    resp = requests.get(url_raw)
+    resp.raise_for_status()
+    file_bytes = resp.content
 
-
-@st.cache_data(show_spinner=False, ttl=300)
-def carregar_dados(file_bytes: bytes):
     with pd.ExcelFile(BytesIO(file_bytes), engine="pyxlsb") as xls:
         abas = xls.sheet_names
         
-        # 1. Carregar Aba Principal
+        # 1. Identificar Aba Principal
         aba_alvo = "Base Teste" if "Base Teste" in abas else abas[0]
         df = pd.read_excel(xls, sheet_name=aba_alvo)
 
-        # 2. Carregar Aba de Bloqueados
+        # 2. Identificar e Carregar Aba de Bloqueados (procura variações com 'bloq')
         df_bloqueados_aba = pd.DataFrame()
-        aba_bloq_alvo = next((a for a in abas if "Bloqueados" in a.lower()), None)
+        aba_bloq_alvo = None
+        
+        for a in abas:
+            if "bloq" in str(a).lower():
+                aba_bloq_alvo = a
+                break
+                
         if aba_bloq_alvo:
             df_bloqueados_aba = pd.read_excel(xls, sheet_name=aba_bloq_alvo)
             df_bloqueados_aba = df_bloqueados_aba.dropna(how="all")
@@ -90,6 +60,7 @@ def carregar_dados(file_bytes: bytes):
     df = df.dropna(how="all")
     df.columns = [str(c).strip() for c in df.columns]
 
+    # Mapeamento de colunas flexível
     renomear = {
         "Histórico do Acionamento": "Historico_Real",
         "Histórico de Acionamento": "Historico_Real",
@@ -107,6 +78,7 @@ def carregar_dados(file_bytes: bytes):
     df["Valor_Divida"] = parse_valor(df["Valor_Divida"]).fillna(0)
     df["Historico_Real"] = df["Historico_Real"].fillna("").astype(str).str.strip()
 
+    # Tratamento de Datas
     for col_data in ["Data de Vencimento", "Vencimento"]:
         if col_data in df.columns:
             if pd.api.types.is_numeric_dtype(df[col_data]):
@@ -115,9 +87,11 @@ def carregar_dados(file_bytes: bytes):
                 df[col_data] = pd.to_datetime(df[col_data], errors="coerce")
             df["Data_Vencimento_Tratada"] = df[col_data]
             break
+            
     if "Data_Vencimento_Tratada" not in df.columns:
         df["Data_Vencimento_Tratada"] = pd.NaT
 
+    # Colunas de Filtro
     for col in ["Responsável", "UNIDADE", "Status", "Classe de Risco", "Grupo"]:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.strip()
@@ -129,7 +103,9 @@ def carregar_dados(file_bytes: bytes):
     df["Classe de Risco"] = df["Classe de Risco"].replace("", "Não informado")
     df["Grupo"] = df["Grupo"].replace("", "Não informado")
 
+    # Regras e Flags
     hoje = pd.Timestamp.today().normalize()
+    
     if "Em Aberto" in df.columns:
         df["Em_Aberto_Bool"] = df["Em Aberto"].astype(str).str.lower().isin(["sim", "true", "1", "s", "em aberto"])
     else:
@@ -162,386 +138,121 @@ def carregar_dados(file_bytes: bytes):
     else:
         df["Mes_Vencimento_Txt"] = "Sem data"
 
-    return df, df_bloqueados_aba
+    return df, df_bloqueados_aba, abas
 
 
-def montar_tabela(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Grupo", "Valor em Aberto", "Vencimento Mais Antigo", "Último Acionamento", "Observação"])
-
-    base = df.copy()
-
-    def concatenar(series):
-        v = [str(x).strip() for x in series if str(x).strip() not in ["", "nan"]]
-        u = list(dict.fromkeys(v))
-        return " | ".join(u) if u else "Não informado"
-
-    if "Chave" in base.columns:
-        sub_agrupado = base.groupby(["UNIDADE", "Responsável", "Classe de Risco", "Grupo", "Chave"], dropna=False).agg({
-            "Valor_Divida": "max",
-            "Data_Vencimento_Tratada": "min",
-            "Status": concatenar,
-            "Historico_Real": concatenar,
-        }).reset_index()
-    else:
-        sub_agrupado = base
-
-    tabela = (
-        sub_agrupado.groupby(["UNIDADE", "Responsável", "Classe de Risco", "Grupo"], dropna=False)
-        .agg(**{
-            "Valor em Aberto": ("Valor_Divida", "sum"),
-            "Vencimento Mais Antigo": ("Data_Vencimento_Tratada", "min"),
-            "Último Acionamento": ("Status", concatenar),
-            "Observação": ("Historico_Real", concatenar),
-        })
-        .reset_index()
-        .sort_values("Valor em Aberto", ascending=False)
-    )
-    tabela["Vencimento Mais Antigo"] = pd.to_datetime(tabela["Vencimento Mais Antigo"]).dt.strftime("%d/%m/%Y").fillna("Sem data")
-    return tabela.rename(columns={"UNIDADE": "Unidade"})
-
-
-def montar_tabela_lancamentos(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"])
-
-    base = df.copy()
-
-    renomear = {
-        "UNIDADE": "Unidade",
-        "Valor_Divida": "Valor do Lançamento",
-        "Data_Vencimento_Tratada": "Vencimento",
-        "Historico_Real": "Descrição do Lançamento"
-    }
-
-    tabela = base.rename(columns=renomear)
-
-    if "Vencimento" in tabela.columns:
-        tabela["Vencimento"] = tabela["Vencimento"].dt.strftime("%d/%m/%Y").fillna("Sem data")
-
-    cols_base = ["Unidade", "Responsável", "Classe de Risco", "Grupo", "Descrição do Lançamento", "Valor do Lançamento", "Vencimento", "Status"]
-    cols_existentes = [c for c in cols_base if c in tabela.columns]
-    cols_restantes = [c for c in tabela.columns if c not in cols_existentes and not c.endswith("_Bool") and not c.endswith("_Txt") and not c.endswith("_Num")]
-
-    return tabela[cols_existentes + cols_restantes]
-
-
-def excel_bytes(abas: dict[str, pd.DataFrame]) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for nome, tabela in abas.items():
-            tabela.to_excel(writer, index=False, sheet_name=nome[:31])
-    return output.getvalue()
-
-
-st.markdown(
-    f"""
-    <style>
-        .stApp {{background: linear-gradient(180deg, #F7FAF8 0%, #EEF5F2 100%);}}
-        .block-container {{max-width: 96%; padding-top: 1.1rem; padding-bottom: 1.5rem;}}
-        section[data-testid="stSidebar"] {{background: linear-gradient(180deg, {ISP_GREEN_DARK} 0%, {ISP_GREEN} 100%);}}
-        section[data-testid="stSidebar"] * {{color: white !important;}}
-        .hero {{
-            background: linear-gradient(135deg, {ISP_GREEN_DARK} 0%, {ISP_GREEN_MID} 100%);
-            border-radius: 22px;
-            padding: 22px 26px;
-            color: white;
-            box-shadow: 0 12px 34px rgba(8,76,61,0.20);
-            margin-bottom: 1rem;
-        }}
-        .hero h1 {{margin: 0 0 4px 0; font-size: 1.9rem;}}
-        .hero p {{margin: 0; opacity: 0.96;}}
-        .kpi-card {{
-            background: {CARD};
-            border: 1px solid {BORDER};
-            border-radius: 18px;
-            padding: 18px 18px 16px 18px;
-            box-shadow: 0 8px 28px rgba(11,107,83,0.08);
-            min-height: 118px;
-        }}
-        .kpi-label {{font-size: 0.86rem; font-weight: 700; color: {MUTED}; margin-bottom: 8px;}}
-        .kpi-value {{font-size: 1.9rem; line-height: 1.08; font-weight: 800; color: {ISP_GREEN_DARK};}}
-        .kpi-foot {{font-size: 0.82rem; color: {MUTED}; margin-top: 8px;}}
-        .section-title {{font-size: 1.08rem; font-weight: 800; color: {ISP_GREEN_DARK}; margin: 1.5rem 0 .85rem 0;}}
-        div[data-testid="stMetric"] {{
-            background: white;
-            border: 1px solid {BORDER};
-            border-radius: 16px;
-            padding: 10px 12px;
-        }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"<div class='hero'><h1>Dashboard da Carteira de Cobrança ISP</h1><p>Conectado ao arquivo do GitHub Raw | atualização automática por cache TTL</p></div>",
-    unsafe_allow_html=True
-)
-
-with st.sidebar:
-    st.title("Painel de Controle")
-    st.caption("Fonte de dados: arquivo .xlsb do GitHub")
-    st.code(GITHUB_RAW_URL, language="text")
-
-    if st.button("🔄 Forçar Recarregamento Total (Limpar Cache)", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-
-    if st.button("🚪 Sair do Painel", use_container_width=True):
-        st.rerun()
+# -----------------------------------------------------------------------------
+# CARREGAMENTO DOS DADOS (SUBSTITUA SUA URL SE NECESSÁRIO)
+# -----------------------------------------------------------------------------
+URL_GITHUB = "https://raw.githubusercontent.com/seu-usuario/seu-repositorio/main/sua_planilha.xlsb"
 
 try:
-    file_bytes = baixar_excel_bytes(GITHUB_RAW_URL)
-    df, df_bloqueados_aba = carregar_dados(file_bytes)
+    df_raw, base_bloqueados_aba, list_abas = carregar_dados_github(URL_GITHUB)
 except Exception as e:
-    st.error(f"Erro crítico ao processar planilha do GitHub: {e}")
+    st.error(f"Erro ao carregar os dados do GitHub: {e}")
     st.stop()
 
-if df.empty or df["Valor_Divida"].sum() == 0:
-    st.error("🚨 ATENÇÃO: O volume total extraído está zerado!")
-    st.dataframe(df.head(5))
-    st.stop()
 
-with st.sidebar:
-    classes = sorted(df["Classe de Risco"].dropna().astype(str).unique().tolist())
-    classe_sel = st.multiselect("Classe de Risco", classes, default=classes)
-    apenas_vencidos = st.toggle("Apenas vencidos", value=False)
-    apenas_abertos = st.toggle("Apenas em aberto", value=False)
+# -----------------------------------------------------------------------------
+# BARRA LATERAL - FILTROS
+# -----------------------------------------------------------------------------
+st.sidebar.header("🔍 Filtros de Consulta")
 
-    grupos = sorted(df["Grupo"].dropna().astype(str).unique().tolist())
-    st.markdown("### Grupo")
+unidades = sorted(list(df_raw["UNIDADE"].unique()))
+unidade_sel = st.sidebar.multiselect("Unidade", unidades, default=[])
 
-    if "grupo_sel" not in st.session_state:
-        st.session_state.grupo_sel = grupos.copy()
+responsaveis = sorted(list(df_raw["Responsável"].unique()))
+resp_sel = st.sidebar.multiselect("Responsável", responsaveis, default=[])
 
-    c_limpar, c_todos = st.columns(2)
-    with c_limpar:
-        if st.button("🧹 Limpar Unidades", use_container_width=True):
-            st.session_state.unidade_sel = []
-            st.rerun()
-    with c_todos:
-        if st.button("✅ Todas", use_container_width=True):
-            st.session_state.grupo_sel = grupos.copy()
-            st.rerun()
+classes = sorted(list(df_raw["Classe de Risco"].unique()))
+classe_sel = st.sidebar.multiselect("Classe de Risco", classes, default=[])
 
-    for g in grupos:
-        key = f"grp_{g}"
-        if key not in st.session_state:
-            st.session_state[key] = True
+grupos = sorted(list(df_raw["Grupo"].unique()))
+grupo_sel = st.sidebar.multiselect("Grupo", grupos, default=[])
 
-    sel_cols = st.columns(2)
-    with sel_cols[0]:
-        if st.button("Selecionar todos", use_container_width=True):
-            for g in grupos:
-                st.session_state[f"grp_{g}"] = True
-            st.session_state.grupo_sel = grupos.copy()
-            st.rerun()
-    with sel_cols[1]:
-        if st.button("Limpar todos", use_container_width=True):
-            for g in grupos:
-                st.session_state[f"grp_{g}"] = False
-            st.session_state.grupo_sel = []
-            st.rerun()
+apenas_vencidos = st.sidebar.checkbox("Apenas Vencidos", value=False)
+apenas_bloqueados = st.sidebar.checkbox("Apenas Bloqueados (na base principal)", value=False)
 
-    grupo_sel = []
-    for g in grupos:
-        st.session_state[f"grp_{g}"] = st.checkbox(g, value=st.session_state.get(f"grp_{g}", True), key=f"chk_{g}")
-        if st.session_state[f"grp_{g}"]:
-            grupo_sel.append(g)
-    st.session_state.grupo_sel = grupo_sel
+# Aplicação dos Filtros
+df_filtrado = df_raw.copy()
 
-unidades_disponiveis = sorted(df["UNIDADE"].dropna().astype(str).unique().tolist())
-if "unidade_sel" not in st.session_state:
-    st.session_state.unidade_sel = unidades_disponiveis.copy()
-
-lbl_col1, lbl_col2 = st.columns([8, 2])
-with lbl_col1:
-    st.write("**Filtrar por UNIDADE:**")
-with lbl_col2:
-    if st.button("🧹 Limpar", type="secondary", use_container_width=True):
-        st.session_state.unidade_sel = []
-        st.rerun()
-
-unidade_sel = st.pills(
-    label="Unidades Filtro",
-    options=unidades_disponiveis,
-    default=st.session_state.unidade_sel,
-    selection_mode="multi",
-    label_visibility="collapsed",
-)
-st.session_state.unidade_sel = unidade_sel if unidade_sel is not None else []
-
-base = df.copy()
-if st.session_state.unidade_sel:
-    base = base[base["UNIDADE"].isin(st.session_state.unidade_sel)]
-else:
-    base = base.iloc[0:0]
-
+if unidade_sel:
+    df_filtrado = df_filtrado[df_filtrado["UNIDADE"].isin(unidade_sel)]
+if resp_sel:
+    df_filtrado = df_filtrado[df_filtrado["Responsável"].isin(resp_sel)]
 if classe_sel:
-    base = base[base["Classe de Risco"].isin(classe_sel)]
+    df_filtrado = df_filtrado[df_filtrado["Classe de Risco"].isin(classe_sel)]
 if grupo_sel:
-    base = base[base["Grupo"].isin(grupo_sel)]
+    df_filtrado = df_filtrado[df_filtrado["Grupo"].isin(grupo_sel)]
 if apenas_vencidos:
-    base = base[base["Vencido_Bool"]]
-if apenas_abertos:
-    base = base[base["Em_Aberto_Bool"]]
+    df_filtrado = df_filtrado[df_filtrado["Vencido_Bool"]]
+if apenas_bloqueados:
+    df_filtrado = df_filtrado[df_filtrado["Bloqueado_Bool"]]
 
-# Filtrar também a aba extra de Bloqueados com base nos filtros aplicados (se houver colunas compatíveis)
-base_bloqueados_aba = df_bloqueados_aba.copy()
-if not base_bloqueados_aba.empty:
-    col_unid = next((c for c in base_bloqueados_aba.columns if "unidade" in c.lower()), None)
-    if col_unid and st.session_state.unidade_sel:
-        base_bloqueados_aba = base_bloqueados_aba[base_bloqueados_aba[col_unid].astype(str).isin(st.session_state.unidade_sel)]
 
-if "Chave" in base.columns:
-    base_unicos_kpi = base.drop_duplicates(subset=["Chave"])
-else:
-    base_unicos_kpi = base
+# -----------------------------------------------------------------------------
+# CONTEÚDO PRINCIPAL - CARDS E ABAS
+# -----------------------------------------------------------------------------
+st.title("📊 Painel de Controle Financeiro & Inadimplência")
+st.write("---")
 
-valor_total = float(base_unicos_kpi["Valor_Divida"].sum())
-clientes_distintos = int(base["Responsável"].nunique())
-titulos_aberto = int(len(base_unicos_kpi))
-clientes_bloqueados = int(base.loc[base["Bloqueado_Bool"], "Responsável"].nunique())
+# Métricas no Topo
+col1, col2, col3, col4 = st.columns(4)
+total_registros = len(df_filtrado)
+total_valor = df_filtrado["Valor_Divida"].sum()
+total_vencidos = df_filtrado[df_filtrado["Vencido_Bool"]]["Valor_Divida"].sum()
+total_bloqueados = len(df_filtrado[df_filtrado["Bloqueado_Bool"]])
 
-k1, k2, k3, k4 = st.columns(4)
-for col, titulo, valor, rodape in [
-    (k1, "Valor Total da Carteira", brl_short(valor_total), brl(valor_total)),
-    (k2, "Clientes Distintos", f"{clientes_distintos:,}".replace(",", "."), "Responsáveis únicos"),
-    (k3, "Títulos Filtrados", f"{titulos_aberto:,}".replace(",", "."), "Registros Únicos"),
-    (k4, "Clientes Bloqueados", f"{clientes_bloqueados:,}".replace(",", "."), "Bloqueado = Sim"),
-]:
-    with col:
-        st.markdown(f"<div class='kpi-card'><div class='kpi-label'>{titulo}</div><div class='kpi-value'>{valor}</div><div class='kpi-foot'>{rodape}</div></div>", unsafe_allow_html=True)
+col1.metric("Total de Registros", f"{total_registros:,}")
+col2.metric("Valor Total", f"R$ {total_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+col3.metric("Valor Vencido", f"R$ {total_vencidos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+col4.metric("Qtd. Bloqueados (Base)", f"{total_bloqueados}")
 
-st.markdown("<div class='section-title'>Visualizações</div>", unsafe_allow_html=True)
+st.write("---")
 
-c1, c2 = st.columns([1.05, 1.25])
-with c1:
-    status_df = base_unicos_kpi.groupby("Status", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False)
-    status_df = status_df[status_df["Status"] != ""]
-    topo = pd.DataFrame({"Status": ["Valor Total"], "Valor_Divida": [valor_total]})
-    funil_df = pd.concat([topo, status_df], ignore_index=True)
-    funil_df["Pct"] = np.where(valor_total > 0, funil_df["Valor_Divida"] / valor_total, 0)
-    textos = [brl_short(v) if i == 0 else f"{brl_short(v)} | {p:.1%}" for i, (v, p) in enumerate(zip(funil_df["Valor_Divida"], funil_df["Pct"]))]
-    fig_funil = go.Figure(go.Funnel(y=funil_df["Status"], x=funil_df["Valor_Divida"], text=textos, textposition="inside", marker={"color": [ISP_GREEN_DARK] + [ISP_GREEN_MID] * max(len(funil_df) - 1, 0)}))
-    fig_funil.update_layout(title="Resumo por Status", height=430, margin=dict(l=130, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
-    st.plotly_chart(fig_funil, use_container_width=True, theme=None)
-
-with c2:
-    mes_df = base_unicos_kpi.groupby("Mes_Vencimento_Txt", as_index=False)["Valor_Divida"].sum().sort_values("Mes_Vencimento_Txt", ascending=True)
-    mes_df["Rótulo"] = mes_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)} | {pct(v, valor_total)}")
-    fig_mes = px.bar(mes_df, x="Valor_Divida", y="Mes_Vencimento_Txt", orientation="h", text="Rótulo", color_discrete_sequence=[ISP_GREEN])
-    fig_mes.update_traces(textposition="inside")
-    fig_mes.update_layout(title="Mês de Vencimento vs Valor", height=430, margin=dict(l=100, r=40, t=50, b=40), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
-    st.plotly_chart(fig_mes, use_container_width=True, theme=None)
-
-c3, c4 = st.columns([1.05, 0.95])
-with c3:
-    risco_df = base_unicos_kpi.groupby("Classe de Risco", as_index=False)["Valor_Divida"].sum().sort_values("Classe de Risco", ascending=True)
-    risco_df["Rótulo"] = risco_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)}<br>{pct(v, valor_total)}")
-    fig_risco = px.bar(risco_df, x="Classe de Risco", y="Valor_Divida", text="Rótulo", color="Valor_Divida", color_continuous_scale=[[0, "#CDEBDD"], [1, ISP_GREEN_DARK]])
-    fig_risco.update_layout(title="Classe de Risco vs Valor", height=420, margin=dict(l=60, r=40, t=50, b=50), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
-    st.plotly_chart(fig_risco, use_container_width=True, theme=None)
-
-with c4:
-    st.markdown("<div class='section-title' style='margin-top:0;'>Análise de Parcelas em Aberto</div>", unsafe_allow_html=True)
-    if not base.empty:
-        df_aberto = base[base["Em_Aberto_Bool"]] if "Em_Aberto_Bool" in base.columns else base
-        if not df_aberto.empty:
-            analise_resp = df_aberto.groupby("Responsável").agg(Qtd_Parcelas=("Valor_Divida", "size"), Valor_Total=("Valor_Divida", "sum")).reset_index()
-            def categorizar_faixas(qtd):
-                if qtd == 1: return "1 parcela"
-                elif qtd == 2: return "2 parcelas"
-                elif qtd == 3: return "3 parcelas"
-                elif qtd == 4: return "4 parcelas"
-                else: return "+5 parcelas"
-            analise_resp["Faixa"] = analise_resp["Qtd_Parcelas"].apply(categorizar_faixas)
-            resumo_faixas = analise_resp.groupby("Faixa").agg(Qtd_Responsaveis=("Responsável", "nunique"), Valor_Carteira=("Valor_Total", "sum")).reindex(["1 parcela", "2 parcelas", "3 parcelas", "4 parcelas", "+5 parcelas"])
-            total_valor_faixas = resumo_faixas["Valor_Carteira"].sum()
-            resumo_faixas["% Carteira"] = resumo_faixas["Valor_Carteira"].apply(lambda x: pct(x, total_valor_faixas))
-            resumo_exibicao = resumo_faixas.reset_index().copy()
-            resumo_exibicao["Valor na Carteira"] = resumo_exibicao["Valor_Carteira"].apply(brl)
-            resumo_exibicao = resumo_exibicao.rename(columns={"Faixa": "Parcelas em Aberto", "Qtd_Responsaveis": "Qtd. Responsáveis"})
-            st.dataframe(resumo_exibicao[["Parcelas em Aberto", "Qtd. Responsáveis", "Valor na Carteira", "% Carteira"]], use_container_width=True, hide_index=True, height=245)
-            atraso_medio = base_unicos_kpi.loc[base_unicos_kpi["Dias_Atraso_Num"] > 0, "Dias_Atraso_Num"].mean()
-            st.caption(f"💡 Atraso médio geral da carteira selecionada: {0 if pd.isna(atraso_medio) else int(round(atraso_medio))} dias.")
-        else:
-            st.info("Nenhum título em aberto identificado para os filtros selecionados.")
-    else:
-        st.info("Sem dados para analisar os indicadores adicionais.")
-
-st.markdown("<div class='section-title'>Análise por Grupo</div>", unsafe_allow_html=True)
-g1, g2 = st.columns([1.15, 0.85])
-with g1:
-    grupo_df = base_unicos_kpi.groupby("Grupo", as_index=False)["Valor_Divida"].sum().sort_values("Valor_Divida", ascending=False)
-    if not grupo_df.empty:
-        grupo_df["Rótulo"] = grupo_df["Valor_Divida"].apply(lambda v: f"{brl_short(v)} | {pct(v, valor_total)}")
-        fig_grupo = px.bar(grupo_df, x="Grupo", y="Valor_Divida", text="Rótulo", color="Valor_Divida", color_continuous_scale=[[0, "#DFF3EC"], [1, ISP_GREEN_DARK]])
-        fig_grupo.update_layout(title="Valor por Grupo", height=430, margin=dict(l=40, r=40, t=50, b=80), paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11), coloraxis_showscale=False)
-        fig_grupo.update_traces(textposition="outside")
-        st.plotly_chart(fig_grupo, use_container_width=True, theme=None)
-    else:
-        st.info("Sem dados para o gráfico por Grupo.")
-with g2:
-    if not grupo_df.empty:
-        fig_pie = px.pie(grupo_df, names="Grupo", values="Valor_Divida", hole=0.45, title="Participação por Grupo")
-        fig_pie.update_traces(textinfo="percent+label")
-        fig_pie.update_layout(height=430, paper_bgcolor=CARD, plot_bgcolor=CARD, font=dict(color=TEXT, size=11))
-        st.plotly_chart(fig_pie, use_container_width=True, theme=None)
-
-st.markdown("<div class='section-title'>Tabelas detalhadas</div>", unsafe_allow_html=True)
-
-tabela_total = montar_tabela(base)
-tabela_bloq = montar_tabela(base[base["Bloqueado_Bool"]])
-tabela_nao_aluno = montar_tabela(base[base["Status Aluno"].astype(str).str.contains("Não é aluno", case=False, na=False)]) if "Status Aluno" in base.columns else pd.DataFrame()
-tabela_lancamentos = montar_tabela_lancamentos(base)
-
-# Criação das abas, incluindo a nova aba "Aba Bloqueados (Excel)"
-aba1, aba2, aba3, aba4, aba5 = st.tabs([
-    "Carteira Total", 
-    "Casos Bloqueados", 
-    "Aba Bloqueados (Excel)", 
-    "Responsável = Não é aluno", 
-    "Visão por Lançamento"
-])
+# Abas de Visualização
+aba1, aba2, aba3 = st.tabs(["📋 Base Filtrada", "📈 Resumo por Unidade", "🚫 Aba Bloqueados (Planilha)"])
 
 with aba1:
-    st.dataframe(tabela_total.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Carteira Total (CSV)", tabela_total.to_csv(index=False).encode("utf-8-sig"), file_name="carteira_total.csv", mime="text/csv", use_container_width=True)
+    st.subheader("Base de Dados Filtrada")
+    st.dataframe(df_filtrado, use_container_width=True, hide_index=True, height=430)
+    
+    st.download_button(
+        label="Baixar Base Filtrada (CSV)",
+        data=df_filtrado.to_csv(index=False).encode("utf-8-sig"),
+        file_name="base_filtrada.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 with aba2:
-    st.dataframe(tabela_bloq.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Casos Bloqueados (CSV)", tabela_bloq.to_csv(index=False).encode("utf-8-sig"), file_name="casos_bloqueados.csv", mime="text/csv", use_container_width=True)
+    st.subheader("Inadimplência por Unidade")
+    if not df_filtrado.empty:
+        resumo_unidade = df_filtrado.groupby("UNIDADE").agg(
+            Qtd_Titulos=("Valor_Divida", "count"),
+            Valor_Total=("Valor_Divida", "sum"),
+            Média_Atraso=("Dias_Atraso_Num", "mean")
+        ).reset_index()
+        
+        resumo_unidade["Média_Atraso"] = resumo_unidade["Média_Atraso"].round(1)
+        st.dataframe(resumo_unidade, use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum dado encontrado para os filtros selecionados.")
 
 with aba3:
+    st.subheader("Registros da Aba de Bloqueados")
+    
     if not base_bloqueados_aba.empty:
         st.dataframe(base_bloqueados_aba, use_container_width=True, hide_index=True, height=430)
-        st.download_button("Baixar Aba Bloqueados (CSV)", base_bloqueados_aba.to_csv(index=False).encode("utf-8-sig"), file_name="aba_bloqueados.csv", mime="text/csv", use_container_width=True)
+        
+        st.download_button(
+            label="Baixar Aba Bloqueados (CSV)",
+            data=base_bloqueados_aba.to_csv(index=False).encode("utf-8-sig"),
+            file_name="aba_bloqueados.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
     else:
-        st.info("A aba 'Bloqueados' não foi encontrada na planilha excel ou está sem registros.")
-
-with aba4:
-    if not tabela_nao_aluno.empty:
-        st.dataframe(tabela_nao_aluno.style.format({"Valor em Aberto": brl}), use_container_width=True, hide_index=True, height=430)
-        st.download_button("Baixar Não é aluno (CSV)", tabela_nao_aluno.to_csv(index=False).encode("utf-8-sig"), file_name="nao_e_aluno.csv", mime="text/csv", use_container_width=True)
-    else:
-        st.info("A coluna 'Status Aluno' não existe ou não há registros com 'Não é aluno'.")
-
-with aba5:
-    st.dataframe(tabela_lancamentos.style.format({"Valor do Lançamento": brl}), use_container_width=True, hide_index=True, height=430)
-    st.download_button("Baixar Visão por Lançamento (CSV)", tabela_lancamentos.to_csv(index=False).encode("utf-8-sig"), file_name="visao_por_lancamento.csv", mime="text/csv", use_container_width=True)
-
-# Inclusão da aba Bloqueados no relatório Excel unificado
-st.download_button(
-    "Baixar todas as tabelas em Excel",
-    data=excel_bytes({
-        "Carteira Total": tabela_total,
-        "Casos Bloqueados": tabela_bloq,
-        "Aba Bloqueados": base_bloqueados_aba if not base_bloqueados_aba.empty else pd.DataFrame({"Mensagem": ["Sem dados disponíveis"]}),
-        "Não é aluno": tabela_nao_aluno if not tabela_nao_aluno.empty else pd.DataFrame({"Mensagem": ["Sem dados disponíveis"]}),
-        "Lançamentos Individuais": tabela_lancamentos
-    }),
-    file_name=f"detalhamento_carteira_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+        st.warning("⚠️ Não foi encontrada nenhuma aba que contenha a palavra 'bloq' (ou ela está vazia).")
+        st.info(f"📋 **Abas encontradas na sua planilha:** `{list_abas}`")
+        st.caption("Verifique na lista acima qual é o nome exato da aba de bloqueados do seu arquivo Excel.")
